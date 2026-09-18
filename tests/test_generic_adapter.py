@@ -95,3 +95,32 @@ class TestPrecedence:
         assert generic in adapters.FALLBACK
         assert generic not in adapters.SPECIFIC
         assert adapters.ADAPTERS.index(generic) == len(adapters.ADAPTERS) - 1
+
+
+class TestNumberLocale:
+    """A comma-delimited file cannot carry an unquoted decimal comma, so a
+    comma inside a value is a thousands separator. Guessing understates by
+    1000x, silently."""
+
+    def test_comma_grouped_quantity_in_a_comma_delimited_file(self, tmp_path):
+        p = write(tmp_path, 'ticker,quantity\nAAPL,"1,234"\n')
+        assert generic.parse(p)[0].quantity == 1234
+
+    def test_comma_grouped_cost_in_a_comma_delimited_file(self, tmp_path):
+        p = write(tmp_path, 'ticker,quantity,avg_cost\nAAPL,10,"1,234.56"\n')
+        assert generic.parse(p)[0].avg_cost == pytest.approx(1234.56)
+
+    def test_decimal_comma_still_works_in_a_semicolon_file(self, tmp_path):
+        """German exports use semicolons precisely so the comma stays free."""
+        p = write(tmp_path, "ticker;quantity;avg_cost\nSAP.DE;18;245,8172\n")
+        h = generic.parse(p)[0]
+        assert h.quantity == 18
+        assert h.avg_cost == pytest.approx(245.8172)
+
+    def test_german_thousands_and_decimal_in_a_semicolon_file(self, tmp_path):
+        p = write(tmp_path, "ticker;quantity;avg_cost\nSAP.DE;18;1.234,56\n")
+        assert generic.parse(p)[0].avg_cost == pytest.approx(1234.56)
+
+    def test_plain_decimal_point_is_unaffected(self, tmp_path):
+        p = write(tmp_path, "ticker,quantity\nAAPL,30.5\n")
+        assert generic.parse(p)[0].quantity == pytest.approx(30.5)

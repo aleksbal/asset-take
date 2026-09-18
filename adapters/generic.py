@@ -68,13 +68,21 @@ def parse(path):
     if delimiter is None:
         return []
 
+    # A comma-delimited file cannot carry an unquoted decimal comma, so any
+    # comma in a value is a thousands separator. Semicolon and tab files carry
+    # no such signal, so those fall back to the heuristic.
+    decimal_sep = "." if delimiter == "," else None
+
     def cell(row, key):
         return (row.get(cols[key]) or "").strip() if key in cols else ""
+
+    def number(row, key):
+        return parse_number(cell(row, key), decimal_sep=decimal_sep)
 
     holdings = []
     with open(path, encoding=encoding, newline="") as f:
         for row in csv.DictReader(f, delimiter=delimiter):
-            qty = parse_number(cell(row, "quantity"))
+            qty = number(row, "quantity")
             if not qty:
                 continue
             isin, ticker = cell(row, "isin"), cell(row, "ticker")
@@ -82,7 +90,7 @@ def parse(path):
                 isin=isin or ticker,
                 name=cell(row, "name") or ticker or isin,
                 quantity=qty,
-                avg_cost=parse_number(cell(row, "avg_cost")) or None,
+                avg_cost=number(row, "avg_cost") or None,
                 currency=(cell(row, "currency") or "EUR").upper(),
                 broker_price=None,   # a plain CSV states no valuation
                 source="generic",

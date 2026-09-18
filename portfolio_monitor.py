@@ -62,8 +62,13 @@ class AlertConfig:
     portfolio_drop_threshold_pct: float = 10.0
 
 
-def parse_number(s):
+def parse_number(s, decimal_sep=None):
     """Parse a number in either plain or German notation.
+
+    `decimal_sep` forces the interpretation where the caller knows the locale.
+    A comma-delimited file cannot use a decimal comma unquoted, so a comma in
+    such a file is a thousands separator: '1,234' is 1234, not 1.234. Guessing
+    understates by 1000x, silently.
 
     '1.234,56' -> 1234.56   (German: dot thousands, comma decimal)
     '205,9263'  -> 205.9263 (German decimal comma)
@@ -76,6 +81,10 @@ def parse_number(s):
     s = (s or "").strip().replace("\xa0", "").replace(" ", "")
     if not s:
         return None
+    if decimal_sep == ".":
+        return float(s.replace(",", ""))
+    if decimal_sep == ",":
+        return float(s.replace(".", "").replace(",", "."))
     if "," in s and "." in s:
         # whichever comes last is the decimal separator
         if s.rfind(",") > s.rfind("."):
