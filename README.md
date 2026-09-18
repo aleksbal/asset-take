@@ -7,12 +7,18 @@ Everything runs on your machine. Your holdings never leave it.
 
 ## Current state
 
-**One broker is supported: ING Germany**, via the `Depotübersicht` CSV export
-from their online banking. That adapter is complete and verified against ING's
-own valuation.
+**ING Germany** — the `Depotübersicht` CSV export from their online banking.
+Complete, and verified against ING's own valuation.
 
-Other brokers need an adapter — see [Adding a broker](#adding-a-broker). The
-format-specific work is contained to one file; nothing else changes.
+**Any plain CSV** — a fallback reader accepting `isin` or `ticker` plus
+`quantity`, and optionally `name`, `avg_cost` and `currency`, under common
+English and German column names. Comma, semicolon or tab.
+
+A plain CSV states no valuation, so ticker resolution cannot be checked
+against the source. Those mappings are marked `unverified` and listed on
+import. An unverified mapping may be the wrong instrument, and nothing
+downstream can tell — which is the reason a broker-specific adapter is worth
+writing.
 
 ## Why this isn't just reading a CSV
 
@@ -93,8 +99,14 @@ Paths come from `paths.py`. New code must take them from there; a hardcoded
 ## Adding a broker
 
 One file in `adapters/` exposing `detect(path) -> bool` and
-`parse(path) -> [Holding]`, registered in `adapters/__init__.py`. Detection
-reads file content, never the filename.
+`parse(path) -> [Holding]`, registered in `adapters/__init__.py` under
+`SPECIFIC`. Detection reads file content, never the filename. `FALLBACK` is
+consulted only after every specific adapter declines, so a generic reader
+never claims a file a dedicated one parses better.
+
+Supply `broker_price` if the export states a valuation. It is what makes
+resolution verifiable, and it is the main advantage a specific adapter has
+over the generic reader.
 
 Everything format-specific belongs inside the adapter. `adapters/ing.py`
 absorbs cp1252 encoding, a preamble before the header, a totals row at the

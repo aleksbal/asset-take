@@ -19,6 +19,8 @@ import paths
 
 MAP_PATH = paths.ISIN_MAP
 TOLERANCE = 0.05  # fraction by which a candidate may differ from the broker price
+TICKER = re.compile(r"^[A-Z0-9]{1,6}(\.[A-Z]{1,3})?$")
+ISIN = re.compile(r"^[A-Z]{2}[A-Z0-9]{10}$")
 COLUMNS = ["isin", "ticker", "currency", "yahoo_price", "broker_price", "deviation_pct", "status", "display_name", "name"]
 
 
@@ -109,30 +111,50 @@ def _price(ticker):
         return None, None
 
 
+def _row(holding, ticker="", currency=None, price="", deviation="", status="unresolved"):
+    return {"isin": holding.isin, "ticker": ticker,
+            "currency": currency or holding.currency,
+            "yahoo_price": price, "broker_price": holding.broker_price,
+            "deviation_pct": deviation, "status": status, "name": holding.name}
+
+
 def resolve(holding, existing=None):
-    """Return a map row for one holding."""
+    """Map one holding to a ticker.
+
+    Where the source states a valuation, candidates are verified against it and
+    the closest currency-matching one wins. Where it does not - a plain CSV
+    export, for instance - there is nothing to verify against, so the first
+    currency-matching candidate is taken and marked `unverified`. That status
+    is the point: an unverified mapping may be the wrong instrument entirely,
+    and nothing downstream can tell.
+    """
     if existing and existing.get("status") == "manual":
         return existing
+
+    # A source may already give a ticker rather than an ISIN.
+    if TICKER.match(holding.isin or "") and not ISIN.match(holding.isin or ""):
+        px, cur = _price(holding.isin)
+        if px is not None and cur == holding.currency:
+            if holding.broker_price:
+                dev = abs(px - holding.broker_price) / holding.broker_price
+                return _row(holding, holding.isin, cur, round(px, 4),
+                            round(dev * 100, 2), "ok" if dev <= TOLERANCE else "check")
+            return _row(holding, holding.isin, cur, round(px, 4), "", "unverified")
 
     best = None
     for sym in _candidates(holding.isin, holding.name):
         px, cur = _price(sym)
         if px is None or cur != holding.currency:
             continue
-        dev = abs(px - holding.broker_price) / holding.broker_price if holding.broker_price else None
-        if dev is None:
-            continue
+        if not holding.broker_price:
+            return _row(holding, sym, cur, round(px, 4), "", "unverified")
+        dev = abs(px - holding.broker_price) / holding.broker_price
         if best is None or dev < best[2]:
             best = (sym, px, dev, cur)
 
     if best is None:
-        return {"isin": holding.isin, "ticker": "", "currency": holding.currency,
-                "yahoo_price": "", "broker_price": holding.broker_price,
-                "deviation_pct": "", "status": "unresolved", "name": holding.name}
+        return _row(holding)
 
     sym, px, dev, cur = best
-    return {"isin": holding.isin, "ticker": sym, "currency": cur,
-            "yahoo_price": round(px, 4), "broker_price": holding.broker_price,
-            "deviation_pct": round(dev * 100, 2),
-            "status": "ok" if dev <= TOLERANCE else "check",
-            "name": holding.name}
+    return _row(holding, sym, cur, round(px, 4), round(dev * 100, 2),
+                "ok" if dev <= TOLERANCE else "check")

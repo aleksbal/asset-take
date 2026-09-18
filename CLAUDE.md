@@ -26,6 +26,11 @@ export by content (never filename), emit `Holding` objects from `canonical.py`,
 and `resolve.py` maps ISIN to a Yahoo ticker. Adding a broker means one new
 adapter with `detect()` and `parse()`; nothing else changes.
 
+`broker_price` is optional. A source that states no valuation (the generic CSV
+reader) yields `unverified` mappings, which are usable but unchecked. Do not
+make it mandatory again - that assumption was baked in until a second adapter
+exposed it, and silently resolved every such holding to nothing.
+
 Verification is the point of `broker_price`: the export carries the broker's
 own valuation, so a wrong ticker is caught automatically. This already caught
 a small-cap ETF being matched to its large-cap namesake. Never accept a

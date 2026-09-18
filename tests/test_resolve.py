@@ -95,3 +95,33 @@ def test_tolerance_boundary_is_the_documented_one(market):
     just_outside = 127.42 * (1 + rz.TOLERANCE * 1.1)
     market(["Y.DE"], {"Y.DE": (just_outside, "EUR")})
     assert rz.resolve(holding())["status"] == "check"
+
+
+class TestWithoutABrokerPrice:
+    """A source that states no valuation, e.g. the generic CSV adapter.
+
+    Before the second adapter existed, every such holding resolved to nothing:
+    verification was mandatory and there was nothing to verify against.
+    """
+
+    def test_takes_a_currency_match_and_marks_it_unverified(self, market):
+        market(["EUNL.DE"], {"EUNL.DE": (127.40, "EUR")})
+        row = rz.resolve(holding(broker_price=None))
+        assert row["ticker"] == "EUNL.DE"
+        assert row["status"] == "unverified"
+
+    def test_still_rejects_a_currency_mismatch(self, market):
+        market(["IWDA.L"], {"IWDA.L": (110.0, "GBP")})
+        assert rz.resolve(holding(broker_price=None))["status"] == "unresolved"
+
+    def test_uses_a_ticker_given_directly(self, market):
+        """The generic adapter may supply a ticker rather than an ISIN."""
+        market([], {"IWDA.AS": (127.40, "EUR")})
+        row = rz.resolve(holding(isin="IWDA.AS", broker_price=None))
+        assert row["ticker"] == "IWDA.AS"
+        assert row["status"] == "unverified"
+
+    def test_a_given_ticker_is_still_verified_when_a_price_exists(self, market):
+        market([], {"IWDA.AS": (127.40, "EUR")})
+        row = rz.resolve(holding(isin="IWDA.AS", broker_price=127.42))
+        assert row["status"] == "ok"
