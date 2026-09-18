@@ -56,6 +56,72 @@ the exchange rate itself as a gain or loss. Both sides use the same rate, so
 what is shown is the local P&L expressed in the base currency; we hold no
 historical FX for the purchase date and do not pretend to.
 
+Ticker resolution compares prices converted, not raw. A listing quoted in
+another currency is the same instrument; requiring the currencies to match
+discarded the only candidate the provider offered for four holdings and is
+what made hand-pinning necessary. Conversion widens the search without
+weakening the check - the small-cap namesake that caused the original
+mismapping is still 93% out and still rejected. A candidate already in the
+holding's currency still wins where one exists, because converting introduces
+a rate we hold no history for.
+
+A price is normalised to its currency's major unit by every layer that reads
+one from the provider, via `quotes.as_major`. Three paths fetch prices
+independently and each must convert:
+
+- `resolve._price()` - `fast_info`, for verifying a candidate
+- `portfolio_monitor.fetch_prices()` - `yf.download`, for the daily valuation
+- `price_history._fetch()` - `Ticker.history`, for seeding a series
+
+This cost three rounds of review to get right, one path at a time, because
+each fix looked complete on its own. Normalising in one leaves the others a
+hundredfold out while the row they wrote looks correct, and in the series the
+mismatch compounds: a pence-scaled seed beside a pound-scaled daily close
+reads as a corporate action and re-seeds back to the raw values every run.
+Before adding a fourth reader, convert at the boundary.
+
+The unit itself is recorded at resolution, in `quote_currency` on the map and
+on `positions.csv`, and is deliberately not upper-cased - `GBp` and `GBP` are
+different units and folding the case destroys the distinction the column
+exists to carry. Valuation reads it from the file rather than asking the
+provider, because a failed lookup is indistinguishable from a major-unit
+quote. Where the unit cannot be established the position is left unpriced: an
+excluded position is visible in the dashboard, a hundredfold overstatement is
+not.
+
+A close belongs to the session it settled in, not to the day of the run. A
+weekend or pre-close run otherwise files it under a day the market never
+traded, and the same-day guard then stops a later run correcting it. A bar
+dated today may still be in progress and the provider flags no such thing, so
+it is not recorded at all: the series lags a session rather than holding an
+intraday value that can never be corrected. The live price is still used for
+the snapshot, which is a point-in-time valuation and wants it.
+
+Where a quote unit cannot be established, nothing is stored and nothing is
+valued. No marker is left either, so the next run simply retries. An unscaled
+series is worse than an absent one - it sits beside converted closes, reads
+as a corporate action, and re-seeds itself back to the raw values every run.
+
+A price is normalised to its currency's major unit the moment it is read.
+London quotes pence and reports `GBp`; downstream valuation gives an
+unrecognised code a rate of 1.0, so a 4,208 pence share is valued as 4,208
+pounds. Normalising only where prices are compared is not enough - the check
+passes while the stored row stays a hundredfold out. `GBP` is not a minor
+unit and must never be scaled.
+
+A price series can be rescaled underneath us. The provider adjusts its
+history retroactively for splits; ours stays as observed, so closes recorded
+either side of one sit on different scales, and provenance cannot repair it
+because both are ours. A day's move too large to be a price move re-seeds the
+series from the provider, whose adjusted history is the one consistent scale
+available.
+
+Resolution must be stable. Candidates differ by hundredths of a percent and
+live prices move, so choosing afresh each run flips between venues for no
+gain, and every flip restarts that position's price history under a new
+symbol. An existing mapping that still verifies and still carries history is
+kept.
+
 A row needs an instrument identifier, not just a quantity. Exports end in a
 subtotal line whose quantity is a sum; admitted, it becomes a holding keyed on
 the empty string, and several of them overwrite one another downstream.

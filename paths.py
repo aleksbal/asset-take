@@ -15,7 +15,8 @@ HOLDINGS = DATA / "holdings.csv"  # canonical, generated
 POSITIONS = DATA / "positions.csv"  # pricing input, generated
 ISIN_MAP = DATA / "isin_map.csv"  # your corrections — the one you edit
 HISTORY = DATA / "history"        # daily snapshots
+PRICES = DATA / "prices"          # per-listing price series
 DASHBOARD = DATA / "dashboard.html"
 
-for d in (DATA, IMPORTS, HISTORY):
+for d in (DATA, IMPORTS, HISTORY, PRICES):
     d.mkdir(parents=True, exist_ok=True)

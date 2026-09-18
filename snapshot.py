@@ -9,6 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import paths
+import price_history
 
 HERE = Path(__file__).parent
 
@@ -35,5 +36,17 @@ path.write_text(json.dumps({
     "alerts": report.alerts,
     "positions": [dataclasses.asdict(p) for p in report.positions],
 }, indent=2, default=str))
+# Per-listing price series: seed any we hold none for, then extend with
+# today's close. Independent of the snapshot above, which records the account.
+seeded, recorded, rescaled = price_history.update(
+    {p.ticker: p.current_price for p in report.positions},
+    dates={p.ticker: p.price_date for p in report.positions if p.price_date},
+    units={p.ticker: p.quote_currency for p in report.positions if p.quote_currency})
+
 print(f"{path}  total {report.total_value:,.2f} {base}  "
       f"({report.daily_change_pct:+.2f}%)  [{len(list(out.glob('*.json')))} days]")
+if seeded:
+    print(f"price history: seeded {seeded} listing(s) from the provider")
+if rescaled:
+    print(f"price history: re-seeded {rescaled} series after a likely corporate action")
+print(f"price history: {recorded} close(s) recorded in {paths.PRICES}")
