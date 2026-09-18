@@ -66,3 +66,47 @@ class TestValuationLayerApplies:
         pos = pm.Position(ticker="SAP.DE", quantity=10, currency="EUR")
         [out] = pm.fetch_prices([pos])
         assert out.current_price == pytest.approx(4208.0)
+
+
+class TestUnconfirmedUnit:
+    """A failed unit lookup looks exactly like a major-unit quote. Assuming
+    the latter values a pence quote as pounds, so the position is left
+    unpriced instead - the dashboard reports those and excludes them from the
+    total, which is visible, where a hundredfold overstatement is not."""
+
+    @pytest.fixture
+    def pm(self, monkeypatch):
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Blind:
+            fast_info = {}
+            info = {}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Blind())
+        return pm
+
+    def test_an_unknown_unit_leaves_the_position_unpriced(self, pm):
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.current_price is None
+
+    def test_a_recorded_unit_survives_a_failed_lookup(self, pm):
+        """This is the point of storing it: resolution already established the
+        unit, so the valuation layer never depends on the network for it."""
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP",
+                          quote_currency="GBp")
+        [out] = pm.fetch_prices([pos])
+        assert out.current_price == pytest.approx(42.08)
+
+    def test_the_settled_session_is_recorded_not_the_run_date(self, pm):
+        """A weekend run downloads Friday's close. Filing it under Saturday
+        invents a trading day, and the same-day guard then locks it in."""
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP",
+                          quote_currency="GBp")
+        [out] = pm.fetch_prices([pos])
+        assert out.price_date == "2026-09-17"

@@ -73,19 +73,19 @@ def main():
         print(f"  {h.isin}  {h.name[:26]:<26} -> {row['ticker'] or '—':<10} "
               f"{row['status']:<10} {str(row['deviation_pct']) + '%' if row['deviation_pct'] != '' else ''}")
     rz.fill_display_names(rows)
-    rz.fill_display_names(rows)
     rz.save_map(rows)
 
     with paths.POSITIONS.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["ticker", "quantity", "currency", "avg_cost"])
+        w.writerow(["ticker", "quantity", "currency", "avg_cost", "quote_currency"])
         for h, ticker in resolved:
             cur = rows[h.isin]["currency"]
             # avg_cost comes from the broker in ITS currency. If the chosen
             # listing prices in another, the cost basis would be compared
             # against the wrong unit, so drop it rather than report bad P&L.
             cost = h.avg_cost if cur == h.currency else ""
-            w.writerow([ticker, _de(h.quantity), cur, _de(cost)])
+            w.writerow([ticker, _de(h.quantity), cur, _de(cost),
+                        rows[h.isin].get("quote_currency", "")])
 
     bad = [r for r in rows.values() if r["status"] not in ("ok", "manual", "unverified")]
     unverified = [r for r in rows.values() if r["status"] == "unverified"]

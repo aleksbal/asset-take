@@ -257,3 +257,30 @@ class TestProviderHistoryUnits:
         assert rescaled == 0
         series = price_history.load("BATS.L")
         assert max(series.values(), key=lambda v: v[0])[0] < 100
+
+
+class TestSettledSession:
+    """A close belongs to the session it settled in, not to the day of the
+    run. A weekend or pre-close run otherwise files it under a day the market
+    never traded, and the same-day guard prevents a later run correcting it."""
+
+    def test_a_close_is_filed_under_its_own_session(self):
+        price_history.update({"SAP.DE": 102.0}, dates={"SAP.DE": "2026-09-17"},
+                             fetch=fetch_none, on=date(2026, 9, 19))
+        assert set(price_history.load("SAP.DE")) == {"2026-09-17"}
+
+    def test_a_weekend_run_does_not_invent_a_trading_day(self):
+        price_history.update({"SAP.DE": 102.0}, dates={"SAP.DE": "2026-09-18"},
+                             fetch=fetch_none, on=date(2026, 9, 19))
+        price_history.update({"SAP.DE": 102.0}, dates={"SAP.DE": "2026-09-18"},
+                             fetch=fetch_none, on=date(2026, 9, 20))
+        assert set(price_history.load("SAP.DE")) == {"2026-09-18"}
+
+    def test_the_run_date_is_used_when_no_session_is_given(self):
+        price_history.update({"SAP.DE": 102.0}, fetch=fetch_none,
+                             on=date(2026, 9, 19))
+        assert set(price_history.load("SAP.DE")) == {"2026-09-19"}
+
+    def test_record_accepts_a_session_string(self):
+        price_history.record("SAP.DE", 102.0, on="2026-09-17")
+        assert set(price_history.load("SAP.DE")) == {"2026-09-17"}

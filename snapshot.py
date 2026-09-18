@@ -39,7 +39,8 @@ path.write_text(json.dumps({
 # Per-listing price series: seed any we hold none for, then extend with
 # today's close. Independent of the snapshot above, which records the account.
 seeded, recorded, rescaled = price_history.update(
-    {p.ticker: p.current_price for p in report.positions})
+    {p.ticker: p.current_price for p in report.positions},
+    dates={p.ticker: p.price_date for p in report.positions if p.price_date})
 
 print(f"{path}  total {report.total_value:,.2f} {base}  "
       f"({report.daily_change_pct:+.2f}%)  [{len(list(out.glob('*.json')))} days]")

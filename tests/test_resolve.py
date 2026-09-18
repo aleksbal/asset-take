@@ -31,13 +31,16 @@ def market(monkeypatch):
     on price, as it was before depth entered the tiebreak. Stubbing it also
     keeps the suite off the network.
     """
-    prices, depths = {}, {}
+    prices, depths, units = {}, {}, {}
     rates = {"EUR": 1.0, "USD": 0.87, "GBP": 1.15, "GBp": 0.0115}
 
-    def set_market(candidates, quotes, history=None, fx=None):
+    def set_market(candidates, quotes, history=None, fx=None, quoted_in=None):
         prices.update(quotes)
         depths.update(history or {})
         rates.update(fx or {})
+        units.update(quoted_in or {})
+        monkeypatch.setattr(rz, "_quote_unit",
+                            lambda t: units.get(t, prices.get(t, ("", ""))[1]))
         monkeypatch.setattr(rz, "_candidates", lambda isin, name: candidates)
         monkeypatch.setattr(rz, "_price", lambda t: prices.get(t, (None, None)))
         monkeypatch.setattr(rz, "_depth", lambda t: depths.get(t, 0))
@@ -358,3 +361,20 @@ class TestMinorUnitQuotes:
                                  currency="GBP", broker_price=48.76))
         assert row["currency"] == "GBP"
         assert row["yahoo_price"] == 48.76
+
+
+class TestQuoteUnitIsRecorded:
+    """The valuation layer must not have to ask what unit a venue quotes in.
+    Asking there is a lookup that can fail, and a failure is indistinguishable
+    from a major-unit quote - which values pence as pounds."""
+
+    def test_the_row_carries_the_venues_own_unit(self, market):
+        market(["BATS.L"], {"BATS.L": (48.76, "GBP")}, history={"BATS.L": 505},
+               quoted_in={"BATS.L": "GBp"})
+        row = rz.resolve(holding(currency="GBP", broker_price=48.76))
+        assert row["currency"] == "GBP"        # the money
+        assert row["quote_currency"] == "GBp"  # the unit it is quoted in
+
+    def test_a_major_unit_listing_records_its_own_currency(self, market):
+        market(["SAP.DE"], {"SAP.DE": (127.40, "EUR")}, history={"SAP.DE": 505})
+        assert rz.resolve(holding())["quote_currency"] == "EUR"

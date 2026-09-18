@@ -104,12 +104,16 @@ def backfill(ticker, fetch=None):
 
 
 def record(ticker, close, on=None):
-    """Append today's observed close, preserving whatever is already stored.
+    """Append an observed close, preserving whatever is already stored.
+
+    `on` is the session the close belongs to, not the day we ran: a run on a
+    weekend downloads Friday's close, and filing it under Saturday invents a
+    trading day. It accepts a date or an ISO string.
 
     A day we fetched keeps its fetched value: re-recording it as local would
     lose the fact that the provider had adjusted it.
     """
-    day = (on or date.today()).isoformat()
+    day = on.isoformat() if hasattr(on, "isoformat") else (on or date.today().isoformat())
     series = load(ticker)
     if day in series:
         return False
@@ -195,14 +199,14 @@ def refresh(ticker, fetch=None):
     return len(rows)
 
 
-def update(priced, fetch=None, on=None):
+def update(priced, dates=None, fetch=None, on=None):
     """Seed any listing we hold no series for, then record today's close.
 
     A close that cannot be a day's move triggers a re-seed: the series has
     most likely been rescaled by a corporate action.
 
-    `priced` maps ticker to today's close. Returns (seeded, recorded,
-    rescaled) counts.
+    `priced` maps ticker to its latest close and `dates` to the session that
+    close settled in. Returns (seeded, recorded, rescaled) counts.
     """
     seeded = recorded = rescaled = 0
     for ticker, close in priced.items():
@@ -212,5 +216,7 @@ def update(priced, fetch=None, on=None):
         series = load(ticker)
         if series and _looks_rescaled(series[max(series)][0], close):
             rescaled += 1 if refresh(ticker, fetch=fetch) else 0
-        recorded += 1 if record(ticker, close, on=on) else 0
+        # The session the close settled in, not the day of the run.
+        day = (dates or {}).get(ticker) or on
+        recorded += 1 if record(ticker, close, on=day) else 0
     return seeded, recorded, rescaled

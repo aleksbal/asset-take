@@ -33,9 +33,13 @@ class Position:
     currency: str
     exchange: Optional[str] = None
     avg_cost: Optional[float] = None
+    # The unit the venue quotes in, recorded at resolution. Not the same as
+    # `currency`: London quotes pence under GBp while the position is in GBP.
+    quote_currency: Optional[str] = None
     # Populated after fetching prices
     current_price: Optional[float] = None
     previous_close: Optional[float] = None
+    price_date: Optional[str] = None
     name: Optional[str] = None
 
 
@@ -145,13 +149,19 @@ def load_portfolio(csv_path: str) -> list[Position]:
                            norm_row.get('einstandskurs') or norm_row.get('kaufkurs') or '')
             avg_cost = parse_number(avg_cost_str) if avg_cost_str else None
 
+            # NOT upper-cased: the quote unit is case-significant. GBp is
+            # pence and GBP is pounds, and folding them loses the distinction
+            # the column exists to carry.
+            quote_currency = (norm_row.get('quote_currency') or '').strip()
+
             if ticker and quantity > 0:
                 positions.append(Position(
                     ticker=ticker,
                     quantity=quantity,
                     currency=currency,
                     exchange=exchange if exchange else None,
-                    avg_cost=avg_cost
+                    avg_cost=avg_cost,
+                    quote_currency=quote_currency or None
                 ))
 
     return positions
@@ -227,12 +237,21 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
 
                 # A download returns the venue's own quote unit. London sends
                 # pence; valuing that with the pound's rate overstates the
-                # position a hundredfold.
-                quote_currency = _quote_currency(pos.ticker)
-                pos.current_price, _ = quotes.as_major(pos.current_price,
-                                                       quote_currency)
-                pos.previous_close, _ = quotes.as_major(pos.previous_close,
-                                                        quote_currency)
+                # position a hundredfold. The unit is recorded at resolution
+                # so this does not depend on a lookup that can fail - and an
+                # unconfirmed unit leaves the position unpriced, because a
+                # failed lookup is indistinguishable from a major-unit quote.
+                unit = pos.quote_currency or _quote_currency(pos.ticker)
+                if not unit:
+                    print(f"WARNING: no quote unit for {pos.ticker}; "
+                          f"leaving it unpriced rather than assuming one")
+                    pos.current_price = pos.previous_close = None
+                else:
+                    pos.current_price, _ = quotes.as_major(pos.current_price, unit)
+                    pos.previous_close, _ = quotes.as_major(pos.previous_close, unit)
+                    # The last bar is the last *settled* session, which on a
+                    # weekend or before a close is not today.
+                    pos.price_date = closes.index[-1].date().isoformat()
 
             # Get company name
             try:

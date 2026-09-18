@@ -80,6 +80,19 @@ mismatch compounds: a pence-scaled seed beside a pound-scaled daily close
 reads as a corporate action and re-seeds back to the raw values every run.
 Before adding a fourth reader, convert at the boundary.
 
+The unit itself is recorded at resolution, in `quote_currency` on the map and
+on `positions.csv`, and is deliberately not upper-cased - `GBp` and `GBP` are
+different units and folding the case destroys the distinction the column
+exists to carry. Valuation reads it from the file rather than asking the
+provider, because a failed lookup is indistinguishable from a major-unit
+quote. Where the unit cannot be established the position is left unpriced: an
+excluded position is visible in the dashboard, a hundredfold overstatement is
+not.
+
+A close belongs to the session it settled in, not to the day of the run. A
+weekend or pre-close run otherwise files it under a day the market never
+traded, and the same-day guard then stops a later run correcting it.
+
 A price is normalised to its currency's major unit the moment it is read.
 London quotes pence and reports `GBp`; downstream valuation gives an
 unrecognised code a rate of 1.0, so a 4,208 pence share is valued as 4,208

@@ -35,7 +35,7 @@ PRICE_NOISE = 0.01
 SUFFICIENT_HISTORY = 200
 TICKER = re.compile(r"^[A-Z0-9]{1,6}(\.[A-Z]{1,3})?$")
 ISIN = re.compile(r"^[A-Z]{2}[A-Z0-9]{10}$")
-COLUMNS = ["isin", "ticker", "currency", "yahoo_price", "broker_price", "deviation_pct", "status", "display_name", "name"]
+COLUMNS = ["isin", "ticker", "currency", "quote_currency", "yahoo_price", "broker_price", "deviation_pct", "status", "display_name", "name"]
 
 
 def load_map():
@@ -201,9 +201,22 @@ def _depth(ticker):
         return 0
 
 
+def _quote_unit(ticker):
+    """The unit the venue quotes in, which is not always the currency named.
+
+    Recorded at resolution so the valuation layer never has to ask. Asking
+    there means a lookup that can fail, and a failure there is indistinguishable
+    from a major-unit quote - which values pence as pounds."""
+    try:
+        return yf.Ticker(ticker).fast_info["currency"] if ticker else ""
+    except Exception:
+        return ""
+
+
 def _row(holding, ticker="", currency=None, price="", deviation="", status="unresolved"):
     return {"isin": holding.isin, "ticker": ticker,
             "currency": currency or holding.currency,
+            "quote_currency": _quote_unit(ticker),
             "yahoo_price": price, "broker_price": holding.broker_price,
             "deviation_pct": deviation, "status": status, "name": holding.name}
 
