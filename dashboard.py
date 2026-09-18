@@ -35,11 +35,26 @@ def load():
 
 
 def positions(snap, by_ticker, names):
+    """Rows for the table and donut.
+
+    A position may carry no price: the provider can fail for one ticker while
+    succeeding for the rest. Such a position is reported separately rather
+    than valued, since a zero would understate the total silently.
+    """
     rows = []
     total = snap["total_value"]
     for p in snap["positions"]:
         h = by_ticker.get(p["ticker"])
         fx = snap["fx_rates"].get(p["currency"], 1)
+        if p.get("current_price") is None:
+            rows.append({
+                "name": names.get(p["ticker"]) or (h.name if h else p["ticker"]),
+                "ticker": p["ticker"], "qty": p["quantity"], "price": None,
+                "currency": p["currency"], "value": None, "weight": None,
+                "day_eur": None, "day_pct": None, "pnl": None, "pnl_pct": None,
+                "unpriced": True,
+            })
+            continue
         value = p["quantity"] * p["current_price"] * fx
         prev = p["quantity"] * (p.get("previous_close") or p["current_price"]) * fx
         cost = (h.quantity * h.avg_cost) if (h and h.avg_cost) else None
@@ -51,8 +66,9 @@ def positions(snap, by_ticker, names):
             "day_pct": (value / prev - 1) * 100 if prev else 0,
             "pnl": (value - cost) if cost else None,
             "pnl_pct": ((value / cost - 1) * 100) if cost else None,
+            "unpriced": False,
         })
-    rows.sort(key=lambda r: -r["value"])
+    rows.sort(key=lambda r: (r["value"] is None, -(r["value"] or 0)))
     return rows
 
 
@@ -101,6 +117,7 @@ def line_chart(snaps, w=760, h=220, pad=(16, 56, 28, 8)):
 
 def donut(rows, size=220, thick=26):
     """Top 7 by weight; the remainder folds into Other. Hues are never cycled."""
+    rows = [r for r in rows if r.get("weight") is not None]
     shown = rows[:7]
     rest = sum(r["weight"] for r in rows[7:])
     slices = [(r["name"], r["weight"], SERIES[i]) for i, r in enumerate(shown)]
@@ -128,21 +145,28 @@ def donut(rows, size=220, thick=26):
             f'<ul class="legend">{legend}</ul>')
 
 
+def _row_html(r):
+    if r.get("unpriced"):
+        return (f'<tr class="unpriced"><td class="nm" title="{r["name"]}">{r["name"]}'
+                f'<span class="tk">{r["ticker"]}</span></td>'
+                f'<td class="n">{r["qty"]:g}</td>'
+                f'<td class="n" colspan="5">no price available</td></tr>')
+    return (f'<tr><td class="nm" title="{r["name"]}">{r["name"]}<span class="tk">{r["ticker"]}</span></td>'
+            f'<td class="n">{r["qty"]:g}</td>'
+            f'<td class="n">{eur(r["price"], 2)} {r["currency"]}</td>'
+            f'<td class="n">{eur(r["value"])}</td>'
+            f'<td class="n w"><span class="bar" style="--p:{r["weight"]:.1f}%"></span>{r["weight"]:.1f}%</td>'
+            f'<td class="n {"up" if r["day_pct"]>=0 else "dn"}">{r["day_pct"]:+.2f}%</td>'
+            f'<td class="n {"up" if (r["pnl"] or 0)>=0 else "dn"}">'
+            f'{(eur(r["pnl"]) + " (" + format(r["pnl_pct"], "+.1f") + "%)") if r["pnl"] is not None else "—"}</td></tr>')
+
+
 def table(rows):
-    body = "".join(
-        f'<tr><td class="nm" title="{r["name"]}">{r["name"]}<span class="tk">{r["ticker"]}</span></td>'
-        f'<td class="n">{r["qty"]:g}</td>'
-        f'<td class="n">{eur(r["price"], 2)} {r["currency"]}</td>'
-        f'<td class="n">{eur(r["value"])}</td>'
-        f'<td class="n w"><span class="bar" style="--p:{r["weight"]:.1f}%"></span>{r["weight"]:.1f}%</td>'
-        f'<td class="n {"up" if r["day_pct"]>=0 else "dn"}">{r["day_pct"]:+.2f}%</td>'
-        f'<td class="n {"up" if (r["pnl"] or 0)>=0 else "dn"}">'
-        f'{(eur(r["pnl"]) + " (" + format(r["pnl_pct"], "+.1f") + "%)") if r["pnl"] is not None else "—"}</td></tr>'
-        for r in rows)
-    return f'''<table><thead><tr>
+    body = "".join(_row_html(r) for r in rows)
+    return f"""<table><thead><tr>
       <th>Position</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Value</th>
       <th class="n">Weight</th><th class="n">Day</th><th class="n">P&amp;L</th>
-    </tr></thead><tbody>{body}</tbody></table>'''
+    </tr></thead><tbody>{body}</tbody></table>"""
 
 
 def main():
@@ -154,8 +178,9 @@ def main():
     total = latest["total_value"]
     pnl = sum(r["pnl"] for r in rows if r["pnl"] is not None)
     cost = sum(r["value"] - r["pnl"] for r in rows if r["pnl"] is not None)
-    no_cost = [r for r in rows if r["pnl"] is None]
-    top5 = sum(r["weight"] for r in rows[:5])
+    unpriced = [r for r in rows if r.get("unpriced")]
+    no_cost = [r for r in rows if r["pnl"] is None and not r.get("unpriced")]
+    top5 = sum(r["weight"] for r in rows[:5] if r["weight"] is not None)
 
     OUT.write_text(TEMPLATE.format(
         generated=latest.get("taken_at", latest["date"]),
@@ -168,7 +193,11 @@ def main():
         pnl_pct=f'{pnl/cost*100:+.1f}' if cost else "—",
         pnl_cls="up" if pnl >= 0 else "dn",
         n=len(rows), top5=f"{top5:.0f}",
-        caveat=(f'<p class="note">{len(no_cost)} position'
+        caveat=((f'<p class="note"><b>{len(unpriced)} position'
+                 f'{"s" if len(unpriced)>1 else ""} could not be priced</b> '
+                 f'({", ".join(r["ticker"] for r in unpriced)}) and {"are" if len(unpriced)>1 else "is"} '
+                 f'excluded from the total, which is therefore understated.</p>')
+                if unpriced else "") + (f'<p class="note">{len(no_cost)} position'
                 f'{"s" if len(no_cost)>1 else ""} priced in another currency than '
                 f'the cost basis ({", ".join(r["ticker"] for r in no_cost)}), so '
                 f'P&amp;L excludes {"them" if len(no_cost)>1 else "it"}.</p>')

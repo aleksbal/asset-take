@@ -65,3 +65,45 @@ def test_donut_folds_beyond_seven_into_other():
     svg = dashboard.donut(rows)
     assert svg.count('class="seg"') == 8
     assert "Other (3)" in svg
+
+
+class TestUnpricedPositions:
+    """The provider can fail for one ticker while succeeding for the rest.
+    That killed the dashboard outright: float * None."""
+
+    def unpriced_snapshot(self):
+        return snapshot(positions=[
+            {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
+             "previous_close": 198.0, "currency": "EUR"},
+            {"ticker": "BROKEN.XX", "quantity": 7, "current_price": None,
+             "previous_close": None, "currency": "EUR"},
+        ])
+
+    def test_does_not_raise(self):
+        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        assert len(rows) == 2
+
+    def test_marks_the_unpriced_position(self):
+        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        broken = next(r for r in rows if r["ticker"] == "BROKEN.XX")
+        assert broken["unpriced"] is True
+        assert broken["value"] is None
+
+    def test_unpriced_is_not_valued_at_zero(self):
+        """Zero would understate the total while looking complete."""
+        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        assert next(r for r in rows if r["ticker"] == "BROKEN.XX")["value"] != 0
+
+    def test_sorts_unpriced_last(self):
+        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        assert rows[-1]["ticker"] == "BROKEN.XX"
+
+    def test_table_renders_both(self):
+        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        html = dashboard.table(rows)
+        assert "no price available" in html
+        assert html.count('<td class="nm"') == 2
+
+    def test_donut_excludes_unpriced(self):
+        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        assert dashboard.donut(rows).count('class="seg"') == 1

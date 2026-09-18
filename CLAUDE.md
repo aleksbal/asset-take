@@ -33,6 +33,10 @@ generic adapter infers one locale from all of the file's numbers together and
 applies it uniformly; where there is no evidence it declines to guess rather
 than inventing a default.
 
+A snapshot position may carry no price - the provider can fail for one ticker
+while succeeding for the rest. Never value such a position at zero: it
+understates the total while looking complete. Exclude it and say so.
+
 `avg_cost` and `broker_price` are both optional on `Holding`, and blank means
 absent, never zero - a zero cost basis reads as a 100% gain. Anything consuming
 them must handle `None`; `canonical.read()` raised on the empty field until a
