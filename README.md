@@ -55,6 +55,13 @@ Text report:
 
     ./.venv/bin/python portfolio_monitor.py -p data/positions.csv -o report
 
+## Tests
+
+    ./.venv/bin/python -m pytest
+
+The ING fixture in `tests/fixtures/` is synthetic — the format's quirks with
+invented holdings. No real portfolio data is in this repository.
+
 ## Code and data are separate
 
 All instance data lives under `data/`, which is gitignored in full — holdings,
