@@ -194,6 +194,7 @@ class TestTrendColumns:
     def test_a_drawdown_shows_the_fall_and_the_days(self):
         html = dashboard._peak_cell(self.trended())
         assert "-12.4%" in html and "78d ago" in html
+        assert 'class="peak-age"' in html   # a span, never the cell itself
 
     def test_a_position_without_a_series_shows_a_dash(self):
         assert "—" in dashboard._peak_cell({})
