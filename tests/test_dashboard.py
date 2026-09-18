@@ -172,3 +172,49 @@ class TestMissingCostNote:
         html = (tmp_path / "out.html").read_text(encoding="utf-8")
         assert "no cost basis" in html
         assert "another currency" not in html
+
+
+class TestTrendColumns:
+    """Trend metrics are shown as facts. A position with no series shows an
+    em dash rather than a blank or a zero - absent and neutral are different
+    claims, and a reader cannot tell them apart from an empty cell."""
+
+    def trended(self, **kw):
+        base = {"drawdown": {"pct": -12.4, "days_since_peak": 78,
+                             "peak": 100.0, "peak_on": "2026-07-01"},
+                "vs_ma50": -3.2, "vs_ma200": -8.1, "rsi": 41.0,
+                "last": 87.6, "sessions": 505}
+        base.update(kw)
+        return base
+
+    def test_a_drawdown_shows_the_fall_and_the_days(self):
+        html = dashboard._peak_cell(self.trended())
+        assert "-12.4%" in html and "78d ago" in html
+
+    def test_a_position_without_a_series_shows_a_dash(self):
+        assert "—" in dashboard._peak_cell({})
+        assert "—" in dashboard._ma_cell({})
+        assert "—" in dashboard._rsi_cell({})
+
+    def test_an_absent_metric_is_not_rendered_as_zero(self):
+        """A missing 200-day average is not 'at its average'."""
+        assert "0" not in dashboard._ma_cell({"vs_ma200": None})
+
+    def test_a_small_fall_is_not_marked_as_a_decline(self):
+        """Colour is a claim. A 2% wobble is not one."""
+        assert "dn" not in dashboard._peak_cell(
+            self.trended(drawdown={"pct": -2.0, "days_since_peak": 5,
+                                   "peak": 100.0, "peak_on": "2026-09-13"}))
+
+    def test_the_table_carries_the_trend_headers(self):
+        rows = dashboard.positions(snapshot(), {}, {})
+        html = dashboard.table(rows)
+        assert "From 6m high" in html and "vs 200d" in html and "RSI" in html
+
+    def test_an_unpriced_row_still_spans_the_full_table(self):
+        """The colspan has to match the header, or the row shears sideways."""
+        markup = dashboard.table([])
+        header = markup.count("<th") - markup.count("<thead")   # <thead matches <th
+        row = dashboard._row_html({"unpriced": True, "name": "X", "ticker": "X",
+                                   "qty": 1})
+        assert int(row.split('colspan="')[1].split('"')[0]) == header - 2

@@ -191,3 +191,15 @@ credential arguments, env vars or config entries for the PIN.
 FinTS needs a product ID registered with the Deutsche Kreditwirtschaft; the
 client refuses to construct without one. Do not substitute a public or
 borrowed ID — they get deactivated.
+
+Trend metrics are facts, never signals. `trends` reports how far a price sits
+below a recent peak, which side of its moving averages it is on, and its RSI.
+It does not say what to do, and nothing should be added that does: by price
+alone, a stock that has stopped growing is indistinguishable from one that is
+resting, and the evidence that acting on these beats holding is contested.
+
+No metric is computed from too little data. A 200-day average of 30 prices is
+not a rough 200-day average, it is a different number wearing the name, and
+the output looks identical either way. Where a series cannot support a
+metric, the value is None and the dashboard shows an em dash - absent and
+neutral are different claims.
