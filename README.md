@@ -1,128 +1,138 @@
-# portfolio
+# asset-take
 
-Daily valuation of a stock/ETF portfolio. Prices from Yahoo Finance.
+Local, daily valuation of a stock/ETF portfolio. Reads a broker's own export,
+prices it against public market data, and keeps a history you own.
+
+Everything runs on your machine. Your holdings never leave it.
+
+## Current state
+
+**One broker is supported: ING Germany**, via the `Depotübersicht` CSV export
+from their online banking. That adapter is complete and verified against ING's
+own valuation.
+
+Other brokers need an adapter — see [Adding a broker](#adding-a-broker). The
+format-specific work is contained to one file; nothing else changes.
+
+## Why this isn't just reading a CSV
+
+A broker export identifies holdings by **ISIN**. Market data is keyed by
+**ticker**, which is exchange-specific: the same fund has a different symbol,
+and a different price, on every venue it trades.
+
+Two things make that mapping fail quietly:
+
+**Currency.** A German broker reports your cost basis in EUR. Looking up
+`US67066G1040` returns `NVDA` on Nasdaq, priced in USD. Compare the two and
+every P&L figure is wrong, with nothing to indicate it.
+
+**Near-misses.** Searching for an ETF's ISIN can return a *different fund with
+a similar name*. This actually happened here: a small-cap ETF was matched to
+its large-cap namesake — 93% off, in the largest position.
+
+So resolution is verified rather than trusted. The export carries
+`Bewertungskurs`, the broker's own current price, and that is used as ground
+truth: a candidate ticker whose live price doesn't match the broker's is
+rejected, not used. Anything unresolved is reported, never silently dropped.
 
 ## Use
 
-Import holdings — when you trade. Drop a broker export in `imports/` (any
-filename; adapters recognise their own format by content):
+Import holdings — when you trade. Drop the export in `data/imports/` under any
+filename; adapters recognise their own format by content:
 
-    ./.venv/bin/python import_holdings.py            # newest file in imports/
+    ./.venv/bin/python import_holdings.py            # newest file in data/imports/
     ./.venv/bin/python import_holdings.py <path>
 
-Snapshot — daily:
+Snapshot — daily. Each run stores one dated valuation:
 
     ./.venv/bin/python snapshot.py
 
-Dashboard:
+Dashboard — value over time, allocation, positions:
 
-    ./.venv/bin/python dashboard.py && open dashboard.html
+    ./.venv/bin/python dashboard.py && open data/dashboard.html
 
 Text report:
 
-    ./.venv/bin/python portfolio_monitor.py -p positions.csv -o report
+    ./.venv/bin/python portfolio_monitor.py -p data/positions.csv -o report
 
-## Files
+## Code and data are separate
 
-| | |
+All instance data lives under `data/`, which is gitignored in full — holdings,
+cost bases, snapshots, broker exports, the rendered dashboard. None of it is
+committable. Set `ASSET_TAKE_DATA` to keep it outside the working copy
+entirely.
+
+Paths come from `paths.py`. New code must take them from there; a hardcoded
+`Path("holdings.csv")` would write to the repo root and become committable.
+
+| Code | |
 |---|---|
 | `adapters/` | one module per broker: `detect(path)`, `parse(path)` |
 | `canonical.py` | the `Holding` record every adapter produces |
-| `resolve.py` | ISIN → Yahoo ticker, verified against the broker's own price |
-| `import_holdings.py` | export → `holdings.csv` + `positions.csv` |
-| `isin_map.csv` | **the file you edit.** Change `ticker`, set `status=manual` to pin it |
-| `holdings.csv` | canonical holdings, generated |
-| `positions.csv` | pricing input, generated — edit `isin_map.csv`, not this |
-| `dashboard.py` | renders `dashboard.html` — local, gitignored, contains your data |
-| `history/` | one JSON per day; the series behind drift analysis |
+| `resolve.py` | ISIN → ticker, verified against the broker's own price |
+| `import_holdings.py` | export → canonical holdings + pricing input |
+| `snapshot.py` | one dated valuation per run |
+| `dashboard.py` | renders the HTML dashboard |
+| `paths.py` | where data lives |
 
-Adding a broker means one new file in `adapters/`.
+| Data (gitignored) | |
+|---|---|
+| `data/imports/` | broker exports you drop in |
+| `data/isin_map.csv` | **the file you edit** — ticker corrections, `status=manual` pins one |
+| `data/holdings.csv` | canonical holdings, generated |
+| `data/positions.csv` | pricing input, generated |
+| `data/history/` | dated snapshots; the series behind trend analysis |
 
-Yahoo can't match a German broker exactly — ING prices on Direkthandel, which
-Yahoo doesn't carry. Expect ~0.1% on the total.
+## Adding a broker
 
-## Bank accounts (ING, FinTS)
+One file in `adapters/` exposing `detect(path) -> bool` and
+`parse(path) -> [Holding]`, registered in `adapters/__init__.py`. Detection
+reads file content, never the filename.
 
-    export FINTS_PRODUCT_ID=<your id>
-    ./.venv/bin/python fetch_ing.py --days 30
+Everything format-specific belongs inside the adapter. `adapters/ing.py`
+absorbs cp1252 encoding, a preamble before the header, a totals row at the
+end, four columns all named `Währung`, and German decimal notation — none of
+which is visible anywhere else in the codebase.
 
-Cash accounts, balances and transactions from ING (BLZ 50010517, endpoint
-`https://fints.ing.de/fints/`). Prompts for Zugangsnummer and PIN at runtime;
-nothing is written to disk but the FinTS system id in `.fints_state.bin`.
+## Accuracy
 
-**Blocked** until a product ID is registered — free, via
-<https://www.hbci-zka.de/register/prod_register.htm>, ~10-15 working days.
-python-fints refuses to construct a client without one.
+Market data won't match a German broker exactly: ING prices on Direkthandel,
+its own OTC venue, which public sources don't carry. Expect ~0.1% on the
+total. That is well inside what this is for — recognising trends over weeks
+and months, not intraday precision.
 
-ING is reported not to support securities/Depot over FinTS (`HKWPD`), so this
-covers cash only; `fetch_ing.py` prints what the bank actually advertises.
-Holdings stay in `positions.csv`.
+## Not yet
+
+`fetch_ing.py` is a FinTS client for **cash accounts** — balances and
+transactions, not holdings. It is unused and not part of any workflow. FinTS
+requires a product ID registered with the Deutsche Kreditwirtschaft, and ING
+appears not to serve securities data over it, so holdings would still come
+from the export. Kept because the settlement account reveals trades, which
+would let position changes be detected automatically.
 
 ## Glossary
 
 **ISIN** — International Securities Identification Number. A 12-character code
-identifying a security worldwide, e.g. `IE00B4L5Y983`. Country prefix, then a
-national code, then a check digit. One ISIN per fund, regardless of where it
-trades. This is what German banks and ING's Depot export use.
+identifying a security worldwide, e.g. `IE00B4L5Y983`. One per instrument,
+regardless of where it trades. What broker exports use.
 
-**Ticker** — the short symbol a security trades under *on one exchange*, e.g.
-`IWDA.AS`. Suffix is the exchange (`.AS` Amsterdam, `.DE` Xetra, `.L` London).
-The same fund has a different ticker, and a slightly different price, on each
-exchange. Yahoo Finance keys on ticker, not ISIN, which is why `positions.csv`
-uses tickers and the mapping has to be done by hand.
+**Ticker** — the symbol a security trades under *on one exchange*, e.g.
+`IWDA.AS`. The suffix is the venue (`.AS` Amsterdam, `.DE` Xetra, `.L`
+London). Market data is keyed on this, which is why the mapping exists.
 
-**WKN** — Wertpapierkennnummer. The older 6-character German security ID,
-still shown by some banks alongside the ISIN.
+**WKN** — the older 6-character German security ID, still shown by some banks.
 
-**P&L** — profit and loss. Here always *unrealized*: current value minus what
-you paid, for things you still hold. Nothing is realized until you sell.
+**P&L** — profit and loss; here always *unrealized*: current value minus what
+you paid, on things you still hold.
 
-**avg_cost** — average price paid per share, across all your purchases of it.
-Multiply by quantity to get what the position cost you. Needed for P&L.
+**avg_cost** — average price paid per share. **Cost basis** — total paid for a
+position (`avg_cost × quantity`).
 
-**Cost basis** — total paid for a position (`avg_cost × quantity`).
+**Weight** — a position's share of total value. Weights drift as prices move.
 
-**Weight** — a position's share of total portfolio value, in percent. Weights
-drift as prices move, which is what "allocation drift" refers to.
+**FX** — foreign exchange. For a holding priced in another currency, part of
+its move is the exchange rate rather than the asset; snapshots store the rates
+so the two stay separable.
 
-**FX** — foreign exchange. If a holding is priced in USD, part of its daily
-move in EUR is the exchange rate rather than the asset. Snapshots store
-`fx_rates` so the two stay separable.
-
-**Base currency** — the currency everything is converted into for totals. EUR.
-
-**Depot** — German for a securities account, i.e. where your shares and ETFs
-are held. Distinct from a cash account.
-
-**Verrechnungskonto** — the cash settlement account attached to a Depot. Buys
-and sells pass through it, so its transactions reveal trades even when the
-Depot itself can't be read.
-
-**FinTS** — Financial Transaction Services, formerly HBCI. The German banking
-standard letting your own software talk to your bank. First-party: you
-authenticate as yourself, with your own credentials.
-
-**HBCI** — the former name for FinTS. Still used interchangeably.
-
-**PIN/TAN** — the FinTS authentication scheme. The PIN is a shared secret sent
-with each signed message; the TAN is the second factor confirmed out-of-band,
-usually in the bank's app.
-
-**SCA** — Strong Customer Authentication. The PSD2 requirement behind the TAN
-prompt. Read access is exempt for 90 days after a successful login, which is
-why FinTS logins lapse.
-
-**PSD2** — the EU payment services directive that mandates SCA and created the
-licensed third-party access regime (XS2A) that sits alongside FinTS.
-
-**HKWPD** — the FinTS segment that requests Depot holdings. ING appears not to
-support it, which is why holdings are maintained by hand here.
-
-**Product ID** — an identifier issued by the Deutsche Kreditwirtschaft
-identifying the *software*, not you. Not a credential and not a security
-control; it grants no access. python-fints requires one anyway.
-
-**BLZ** — Bankleitzahl, the German bank sort code. ING is `50010517`.
-
-**Zugangsnummer** — ING's name for the login identifier. In FinTS terms it is
-the *Benutzerkennung*.
+**Depot** — German for a securities account. **Verrechnungskonto** — the cash
+settlement account attached to it; trades pass through it.
