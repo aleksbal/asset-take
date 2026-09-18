@@ -32,13 +32,18 @@ def market(monkeypatch):
     keeps the suite off the network.
     """
     prices, depths = {}, {}
+    rates = {"EUR": 1.0, "USD": 0.87, "GBP": 1.15, "GBp": 0.0115}
 
-    def set_market(candidates, quotes, history=None):
+    def set_market(candidates, quotes, history=None, fx=None):
         prices.update(quotes)
         depths.update(history or {})
+        rates.update(fx or {})
         monkeypatch.setattr(rz, "_candidates", lambda isin, name: candidates)
         monkeypatch.setattr(rz, "_price", lambda t: prices.get(t, (None, None)))
         monkeypatch.setattr(rz, "_depth", lambda t: depths.get(t, 0))
+        monkeypatch.setattr(rz, "_fx", lambda c, b: (
+            None if rates.get(c) is None or rates.get(b) is None
+            else rates[c] / rates[b]))
     return set_market
 
 
@@ -60,13 +65,32 @@ def test_flags_a_near_namesake_when_it_is_the_only_candidate(market):
     assert float(row["deviation_pct"]) > 50
 
 
-def test_rejects_a_listing_in_another_currency(market):
-    """A USD quote against an EUR cost basis makes every P&L figure wrong."""
-    market(["NVDA"], {"NVDA": (190.64, "USD")})
+def test_takes_a_foreign_listing_that_verifies_once_converted(market):
+    """A listing in another currency is not a different instrument. Several
+    holdings had no candidate at all in the broker's currency, and discarding
+    the foreign one outright is what made hand-pinning necessary."""
+    market(["NVDA"], {"NVDA": (219.13, "USD")})
     row = rz.resolve(holding(isin="US67066G1040", name="NVIDIA CORP.",
                              broker_price=190.64))
-    assert row["ticker"] == ""
-    assert row["status"] == "unresolved"
+    assert row["ticker"] == "NVDA"
+    assert row["currency"] == "USD"      # stored as quoted, converted later
+    assert row["status"] == "ok"
+
+
+def test_still_rejects_a_foreign_listing_that_does_not_verify(market):
+    """Conversion widens the search; it does not weaken the check. The
+    small-cap namesake stays rejected however its currency is read."""
+    market(["IUSN.DE"], {"IUSN.DE": (6.60, "EUR")})
+    row = rz.resolve(holding())
+    assert row["status"] == "check"
+    assert float(row["deviation_pct"]) > 50
+
+
+def test_a_listing_whose_rate_is_unavailable_is_skipped(market):
+    """No rate means no comparison. Pricing it at a rate of one would put a
+    plausible number on an unverified instrument."""
+    market(["XXX.QQ"], {"XXX.QQ": (127.40, "XXX")}, fx={"XXX": None})
+    assert rz.resolve(holding())["status"] == "unresolved"
 
 
 def test_prefers_currency_match_over_price_proximity(market):
@@ -118,9 +142,19 @@ class TestWithoutABrokerPrice:
         assert row["ticker"] == "EUNL.DE"
         assert row["status"] == "unverified"
 
-    def test_still_rejects_a_currency_mismatch(self, market):
+    def test_prefers_the_holdings_currency_when_nothing_verifies_it(self, market):
+        """With no valuation to check against, currency is the only signal
+        left, so a listing already in the holding's currency is the safer
+        guess - but a foreign one still beats no mapping at all."""
+        market(["IWDA.L", "EUNL.DE"],
+               {"IWDA.L": (110.0, "GBP"), "EUNL.DE": (127.40, "EUR")})
+        assert rz.resolve(holding(broker_price=None))["ticker"] == "EUNL.DE"
+
+    def test_falls_back_to_a_foreign_listing_when_it_is_all_there_is(self, market):
         market(["IWDA.L"], {"IWDA.L": (110.0, "GBP")})
-        assert rz.resolve(holding(broker_price=None))["status"] == "unresolved"
+        row = rz.resolve(holding(broker_price=None))
+        assert row["ticker"] == "IWDA.L"
+        assert row["status"] == "unverified"
 
     def test_uses_a_ticker_given_directly(self, market):
         """The generic adapter may supply a ticker rather than an ISIN."""
@@ -220,3 +254,66 @@ class TestHistoryBreaksAPriceTie:
                {"FRA.F": (127.41, "EUR"), "VIE.VI": (127.60, "EUR")},
                history={"FRA.F": 251, "VIE.VI": 252})
         assert rz.resolve(holding())["ticker"] == "FRA.F"
+
+
+class TestStability:
+    """Re-resolution must not churn. Candidates differ by hundredths of a
+    percent and live prices move, so picking afresh each time flips between
+    venues - and each flip starts the position's price history over under a
+    new symbol."""
+
+    def test_an_existing_mapping_that_still_verifies_is_kept(self, market):
+        market(["RHM.HM", "RHM.DE"],
+               {"RHM.HM": (127.42, "EUR"), "RHM.DE": (127.30, "EUR")},
+               history={"RHM.HM": 505, "RHM.DE": 505})
+        row = rz.resolve(holding(), existing={"ticker": "RHM.DE", "status": "ok"})
+        assert row["ticker"] == "RHM.DE"      # despite RHM.HM being closer now
+
+    def test_a_mapping_that_stopped_verifying_is_replaced(self, market):
+        market(["RIGHT.DE"], {"RIGHT.DE": (127.40, "EUR"), "STALE.DE": (9.01, "EUR")},
+               history={"RIGHT.DE": 505, "STALE.DE": 505})
+        row = rz.resolve(holding(), existing={"ticker": "STALE.DE", "status": "ok"})
+        assert row["ticker"] == "RIGHT.DE"
+
+    def test_a_thin_mapping_is_not_entrenched_by_stability(self, market):
+        """Keeping what we have must not preserve the very listings the depth
+        preference exists to replace."""
+        market(["THIN.SG", "DEEP.DE"],
+               {"THIN.SG": (127.42, "EUR"), "DEEP.DE": (127.40, "EUR")},
+               history={"THIN.SG": 1, "DEEP.DE": 505})
+        row = rz.resolve(holding(), existing={"ticker": "THIN.SG", "status": "ok"})
+        assert row["ticker"] == "DEEP.DE"
+
+    def test_stability_does_not_apply_without_a_valuation(self, market):
+        """Nothing to re-verify against, so the mapping cannot be trusted to
+        still hold."""
+        market(["EUNL.DE"], {"EUNL.DE": (127.40, "EUR"), "OLD.DE": (127.40, "EUR")},
+               history={"EUNL.DE": 505, "OLD.DE": 505})
+        row = rz.resolve(holding(broker_price=None),
+                         existing={"ticker": "OLD.DE", "status": "ok"})
+        assert row["ticker"] == "EUNL.DE"
+
+
+class TestPinnedRows:
+    """A pin fixes the ticker, not the figures beside it."""
+
+    def test_a_pin_keeps_its_ticker(self, market):
+        market(["OTHER.DE"], {"EUNL.DE": (127.40, "EUR"), "OTHER.DE": (127.42, "EUR")})
+        row = rz.resolve(holding(), existing={"ticker": "EUNL.DE", "status": "manual",
+                                              "yahoo_price": 9.047, "deviation_pct": 92.9})
+        assert row["ticker"] == "EUNL.DE" and row["status"] == "manual"
+
+    def test_a_pin_does_not_preserve_the_figures_it_replaced(self, market):
+        """The row was pinned because the automatic match was 92.9% off. Those
+        numbers describe the rejected match, not the pinned one."""
+        market([], {"EUNL.DE": (127.40, "EUR")})
+        row = rz.resolve(holding(), existing={"ticker": "EUNL.DE", "status": "manual",
+                                              "yahoo_price": 9.047, "deviation_pct": 92.9})
+        assert row["yahoo_price"] == 127.4
+        assert float(row["deviation_pct"]) < 1
+
+    def test_a_pin_that_cannot_be_priced_is_left_alone(self, market):
+        market([], {})
+        row = rz.resolve(holding(), existing={"ticker": "GONE.DE", "status": "manual",
+                                              "yahoo_price": 9.047, "deviation_pct": 92.9})
+        assert row["yahoo_price"] == 9.047

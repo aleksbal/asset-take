@@ -56,6 +56,21 @@ the exchange rate itself as a gain or loss. Both sides use the same rate, so
 what is shown is the local P&L expressed in the base currency; we hold no
 historical FX for the purchase date and do not pretend to.
 
+Ticker resolution compares prices converted, not raw. A listing quoted in
+another currency is the same instrument; requiring the currencies to match
+discarded the only candidate the provider offered for four holdings and is
+what made hand-pinning necessary. Conversion widens the search without
+weakening the check - the small-cap namesake that caused the original
+mismapping is still 93% out and still rejected. A candidate already in the
+holding's currency still wins where one exists, because converting introduces
+a rate we hold no history for.
+
+Resolution must be stable. Candidates differ by hundredths of a percent and
+live prices move, so choosing afresh each run flips between venues for no
+gain, and every flip restarts that position's price history under a new
+symbol. An existing mapping that still verifies and still carries history is
+kept.
+
 A row needs an instrument identifier, not just a quantity. Exports end in a
 subtotal line whose quantity is a sum; admitted, it becomes a holding keyed on
 the empty string, and several of them overwrite one another downstream.
