@@ -24,13 +24,21 @@ def holding(**kw):
 
 @pytest.fixture
 def market(monkeypatch):
-    """Let a test declare the candidate universe and its prices."""
-    prices = {}
+    """Let a test declare the candidate universe, its prices and its depths.
 
-    def set_market(candidates, quotes):
+    `depths` is how many days of history each listing carries. It defaults to
+    equal depth, so a test that does not care about history is decided purely
+    on price, as it was before depth entered the tiebreak. Stubbing it also
+    keeps the suite off the network.
+    """
+    prices, depths = {}, {}
+
+    def set_market(candidates, quotes, history=None):
         prices.update(quotes)
+        depths.update(history or {})
         monkeypatch.setattr(rz, "_candidates", lambda isin, name: candidates)
         monkeypatch.setattr(rz, "_price", lambda t: prices.get(t, (None, None)))
+        monkeypatch.setattr(rz, "_depth", lambda t: depths.get(t, 0))
     return set_market
 
 
@@ -139,3 +147,76 @@ class TestExplicitTicker:
         market(["EUNL.DE"], {"EUNL.DE": (127.40, "EUR")})
         row = rz.resolve(holding(ticker="DELISTED.XX", broker_price=None))
         assert row["ticker"] == "EUNL.DE"
+
+
+class TestHistoryBreaksAPriceTie:
+    """Two listings of one security quote within a few hundredths of a percent
+    of each other, and picking the closer one is picking noise. A regional
+    venue priced five holdings correctly while carrying a single day of
+    history - correct to value, impossible to chart.
+    """
+
+    def test_depth_wins_where_prices_are_indistinguishable(self, market):
+        """The thin listing is the *closer* of the two here. Taking the
+        closest price would pick it, which is what used to happen."""
+        market(["DE000HAG0005.SG", "HAG.DE"],
+               {"DE000HAG0005.SG": (77.25, "EUR"), "HAG.DE": (77.30, "EUR")},
+               history={"DE000HAG0005.SG": 1, "HAG.DE": 505})
+        row = rz.resolve(holding(broker_price=77.24))
+        assert row["ticker"] == "HAG.DE"
+        assert row["status"] == "ok"
+
+    def test_depth_wins_across_the_whole_noise_band(self, market):
+        """Half a percent apart is still venue noise, not a different
+        security. The thin listing is again the closer one."""
+        market(["THIN.SG", "DEEP.DE"],
+               {"THIN.SG": (127.42, "EUR"), "DEEP.DE": (128.00, "EUR")},
+               history={"THIN.SG": 1, "DEEP.DE": 505})
+        assert rz.resolve(holding())["ticker"] == "DEEP.DE"
+
+    def test_the_closer_price_still_wins_when_it_has_the_history(self, market):
+        market(["EB2.SG", "EB2.F"],
+               {"EB2.SG": (655.00, "EUR"), "EB2.F": (649.50, "EUR")},
+               history={"EB2.SG": 1, "EB2.F": 505})
+        assert rz.resolve(holding(broker_price=648.50))["ticker"] == "EB2.F"
+
+    def test_a_real_price_difference_is_not_overridden_by_depth(self, market):
+        """The band is narrow on purpose: a candidate percent away is a
+        different security, however much history it carries."""
+        market(["RIGHT.DE", "WRONG.DE"],
+               {"RIGHT.DE": (127.40, "EUR"), "WRONG.DE": (120.00, "EUR")},
+               history={"RIGHT.DE": 1, "WRONG.DE": 505})
+        assert rz.resolve(holding())["ticker"] == "RIGHT.DE"
+
+    def test_currency_still_gates_before_depth(self, market):
+        market(["DEEP.US", "SHALLOW.DE"],
+               {"DEEP.US": (127.41, "USD"), "SHALLOW.DE": (127.40, "EUR")},
+               history={"DEEP.US": 505, "SHALLOW.DE": 1})
+        assert rz.resolve(holding())["ticker"] == "SHALLOW.DE"
+
+    def test_equal_depth_falls_back_to_the_closer_price(self, market):
+        market(["A.DE", "B.DE"],
+               {"A.DE": (127.41, "EUR"), "B.DE": (127.30, "EUR")},
+               history={"A.DE": 505, "B.DE": 505})
+        assert rz.resolve(holding())["ticker"] == "A.DE"
+
+    def test_a_candidate_beyond_tolerance_is_still_flagged(self, market):
+        market(["ONLY.DE"], {"ONLY.DE": (6.60, "EUR")}, history={"ONLY.DE": 505})
+        assert rz.resolve(holding())["status"] == "check"
+
+    def test_depth_is_a_threshold_not_a_score(self, market):
+        """Once a listing carries a year, more days are not better. Ranking on
+        raw count swaps a perfectly usable listing for another over a handful
+        of trading days that differ only by local holidays."""
+        market(["FRA.F", "VIE.VI"],
+               {"FRA.F": (127.41, "EUR"), "VIE.VI": (127.60, "EUR")},
+               history={"FRA.F": 505, "VIE.VI": 509})
+        assert rz.resolve(holding())["ticker"] == "FRA.F"
+
+    def test_a_listing_short_a_few_holidays_still_counts_as_deep(self, market):
+        """The threshold sits below a full trading year so that a venue which
+        closed for a few local holidays is not treated as historyless."""
+        market(["FRA.F", "VIE.VI"],
+               {"FRA.F": (127.41, "EUR"), "VIE.VI": (127.60, "EUR")},
+               history={"FRA.F": 251, "VIE.VI": 252})
+        assert rz.resolve(holding())["ticker"] == "FRA.F"

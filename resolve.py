@@ -18,7 +18,15 @@ import yfinance as yf
 import paths
 
 MAP_PATH = paths.ISIN_MAP
-TOLERANCE = 0.05  # fraction by which a candidate may differ from the broker price
+TOLERANCE = 0.05
+# Two listings of one security quote within a few hundredths of a percent of
+# each other. Wider than that is a real price difference, not venue noise.
+PRICE_NOISE = 0.01
+# Depth is a threshold, not a score: past it a listing can carry a trend, and
+# preferring 506 days over 505 only swaps one usable listing for another.
+# Set below a full trading year on purpose - a listing that missed a few days
+# to local holidays is no less usable than one that did not.
+SUFFICIENT_HISTORY = 200  # fraction by which a candidate may differ from the broker price
 TICKER = re.compile(r"^[A-Z0-9]{1,6}(\.[A-Z]{1,3})?$")
 ISIN = re.compile(r"^[A-Z]{2}[A-Z0-9]{10}$")
 COLUMNS = ["isin", "ticker", "currency", "yahoo_price", "broker_price", "deviation_pct", "status", "display_name", "name"]
@@ -111,6 +119,19 @@ def _price(ticker):
         return None, None
 
 
+def _depth(ticker):
+    """Trading days of daily history the provider holds for this listing.
+
+    A regional venue can quote the right price and carry almost no history:
+    Stuttgart listings priced five holdings correctly while offering a single
+    day, which values the portfolio but cannot chart it.
+    """
+    try:
+        return len(yf.Ticker(ticker).history(period="1y", interval="1d"))
+    except Exception:
+        return 0
+
+
 def _row(holding, ticker="", currency=None, price="", deviation="", status="unresolved"):
     return {"isin": holding.isin, "ticker": ticker,
             "currency": currency or holding.currency,
@@ -144,7 +165,7 @@ def resolve(holding, existing=None):
                             round(dev * 100, 2), "ok" if dev <= TOLERANCE else "check")
             return _row(holding, given, cur, round(px, 4), "", "unverified")
 
-    best = None
+    matches = []
     for sym in _candidates(holding.isin, holding.name):
         px, cur = _price(sym)
         if px is None or cur != holding.currency:
@@ -152,11 +173,21 @@ def resolve(holding, existing=None):
         if not holding.broker_price:
             return _row(holding, sym, cur, round(px, 4), "", "unverified")
         dev = abs(px - holding.broker_price) / holding.broker_price
-        if best is None or dev < best[2]:
-            best = (sym, px, dev, cur)
+        matches.append((sym, px, dev, cur))
 
-    if best is None:
+    if not matches:
         return _row(holding)
+
+    # Taking the closest price outright let a listing with one day of history
+    # beat one with two years of it, over a difference of four cents. Where
+    # two listings are the same price to within noise, depth decides.
+    #
+    # The band is deliberately narrow. TOLERANCE exists to catch a mapping to
+    # the wrong instrument, not to declare everything under it equivalent - a
+    # candidate 4% out is a different security, however much history it has.
+    closest = min(m[2] for m in matches)
+    tied = [m for m in matches if m[2] <= closest + PRICE_NOISE]
+    best = max(tied, key=lambda m: (min(_depth(m[0]), SUFFICIENT_HISTORY), -m[2]))
 
     sym, px, dev, cur = best
     return _row(holding, sym, cur, round(px, 4), round(dev * 100, 2),
