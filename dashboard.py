@@ -36,16 +36,27 @@ def load():
     return snaps, by_ticker, names
 
 
-def trend(ticker):
+def trend(ticker, price=None, on=None):
     """Descriptive metrics for one position, or {} where there is no series.
 
     Facts, not signals: how far below a recent peak the price sits and which
     side of its averages it is on. What to do about that is not something a
     price series knows.
+
+    The stored series deliberately excludes the current session, because an
+    in-progress close cannot be corrected once written. The dashboard shows
+    that live price though, so it is added here for the calculation only - a
+    position that moved sharply today would otherwise display today's price
+    beside yesterday's drawdown. Nothing is written back.
     """
     series = [(day, close) for day, (close, _) in
               price_history.load(ticker).items()]
-    return trends.describe(series) if series else {}
+    if not series:
+        return {}
+    today = (on or date.today()).isoformat()
+    if price is not None and not any(str(day) == today for day, _ in series):
+        series.append((today, price))
+    return trends.describe(series)
 
 
 def positions(snap, by_ticker, names):
@@ -85,7 +96,9 @@ def positions(snap, by_ticker, names):
             "pnl": (value - cost) if cost else None,
             "pnl_pct": ((value / cost - 1) * 100) if cost else None,
             "unpriced": False,
-            "trend": trend(p["ticker"]),
+            # The series is in the listing's own currency, not the base, so
+            # the unconverted price is the one that belongs beside it.
+            "trend": trend(p["ticker"], price=p["current_price"]),
         })
     rows.sort(key=lambda r: (r["value"] is None, -(r["value"] or 0)))
     return rows

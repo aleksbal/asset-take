@@ -4,6 +4,10 @@ This is where the missing-cost bug surfaced: `canonical.read()` raised on the
 empty field, so any import from a source without cost data killed the whole
 dashboard rather than simply omitting P&L.
 """
+from datetime import date
+
+import pytest
+
 import canonical
 import dashboard
 from canonical import Holding
@@ -218,3 +222,43 @@ class TestTrendColumns:
         row = dashboard._row_html({"unpriced": True, "name": "X", "ticker": "X",
                                    "qty": 1})
         assert int(row.split('colspan="')[1].split('"')[0]) == header - 2
+
+
+class TestTrendUsesTheDisplayedPrice:
+    """The stored series excludes the current session, because an in-progress
+    close cannot be corrected once written. The row shows that live price
+    though, so a position that moved sharply today would otherwise display
+    today's price beside yesterday's drawdown."""
+
+    @pytest.fixture
+    def series(self, monkeypatch):
+        from datetime import date, timedelta
+        start = date(2025, 1, 1)
+        stored = {(start + timedelta(days=i)).isoformat(): (100.0, "yahoo")
+                  for i in range(400)}
+        monkeypatch.setattr(dashboard.price_history, "load",
+                            lambda t: dict(stored))
+        return stored
+
+    def test_the_live_price_is_included(self, series):
+        m = dashboard.trend("SAP.DE", price=150.0, on=date(2026, 2, 5))
+        assert m["last"] == 150.0
+
+    def test_it_is_not_written_back(self, series, monkeypatch):
+        """Transient. Writing it would fix an intraday value as a close."""
+        written = []
+        monkeypatch.setattr(dashboard.price_history, "record",
+                            lambda *a, **k: written.append(a))
+        dashboard.trend("SAP.DE", price=150.0, on=date(2026, 2, 5))
+        assert written == []
+
+    def test_a_session_already_stored_is_not_duplicated(self, series):
+        m = dashboard.trend("SAP.DE", price=999.0, on=date(2025, 6, 1))
+        assert m["last"] == 100.0      # the stored close for that day wins
+
+    def test_without_a_price_the_series_stands_alone(self, series):
+        assert dashboard.trend("SAP.DE")["last"] == 100.0
+
+    def test_no_series_means_no_metrics(self, monkeypatch):
+        monkeypatch.setattr(dashboard.price_history, "load", lambda t: {})
+        assert dashboard.trend("SAP.DE", price=150.0) == {}
