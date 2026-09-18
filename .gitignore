@@ -1,0 +1,12 @@
+# All instance data — holdings, valuations, broker exports. Never committed.
+data/
+
+.venv/
+__pycache__/
+.DS_Store
+*.log
+report_*.txt
+.fints_state.bin
+tan_challenge.*
+.idea/
+.vscode/

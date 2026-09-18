@@ -1,0 +1,12 @@
+{
+  "base_currency": "EUR",
+  "alerts": {
+    "daily_change_threshold_pct": 5.0,
+    "consecutive_days_threshold": 3,
+    "portfolio_drop_threshold_pct": 10.0,
+    "target_prices": {
+      "AAPL": 250.00,
+      "MSFT": 500.00
+    }
+  }
+}
