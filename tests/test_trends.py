@@ -208,3 +208,22 @@ class TestLiveQuote:
         rising = series([100.0 + i for i in range(30)])
         assert trends.describe(rising, live=50.0)["rsi"] < \
             trends.describe(rising)["rsi"]
+
+    def test_the_age_is_measured_to_the_live_quote(self):
+        """A Monday quote against a Friday peak is three days on. Measuring
+        to the last stored close reports nought."""
+        s = series([100.0 + i for i in range(200)])        # peak on the last
+        peak_day = date(2026, 1, 1) + timedelta(days=199)
+        m = trends.describe(s, live=150.0, live_on=peak_day + timedelta(days=3))
+        assert m["drawdown"]["days_since_peak"] == 3
+
+    def test_without_a_live_quote_the_age_runs_to_the_last_close(self):
+        s = series([100.0 + i for i in range(180)] + [279.0] * 20)
+        assert trends.describe(s)["drawdown"]["days_since_peak"] == 20
+
+    def test_the_window_ends_at_the_live_quote(self):
+        """A quote after a long gap describes six months back from itself."""
+        s = series([100.0 + i for i in range(200)])
+        last = date(2026, 1, 1) + timedelta(days=199)
+        assert trends.describe(s, live=150.0,
+                               live_on=last + timedelta(days=200)) is not None

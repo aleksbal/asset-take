@@ -31,7 +31,7 @@ def _window(closes, days):
     return closes[-days:]
 
 
-def _since(closes, months):
+def _since(closes, months, end=None):
     """The closes within the last `months`, or None if the series is shorter.
 
     A calendar window, because "its six-month high" is a claim about time
@@ -41,7 +41,7 @@ def _since(closes, months):
     """
     if not closes:
         return None
-    last = _as_date(closes[-1][0])
+    last = _as_date(end or closes[-1][0])
     start = _minus_months(last, months)
     if _as_date(closes[0][0]) > start:
         return None
@@ -65,17 +65,21 @@ def _minus_months(day, months):
     return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
 
 
-def drawdown(closes, months=DRAWDOWN_MONTHS, last=None):
+def drawdown(closes, months=DRAWDOWN_MONTHS, last=None, on=None):
     """How far below its peak the last price sits, and when that peak was.
 
     The plateau case this exists for: a price that stopped rising some time
     ago and has been drifting since. A table of current values cannot show
     that, because nothing in today's number remembers the peak.
     """
-    window = _since(closes, months)
+    window = _since(closes, months, end=on)
     if not window:
         return None
-    last_day, stored = window[-1]
+    stored_day, stored = window[-1]
+    # The age is measured to the price being reported. A live Monday quote
+    # against a Friday peak is three days on, not the nought that measuring
+    # to the last stored close would give.
+    last_day = on or stored_day
     # A live price can itself be the high. Comparing today against a peak it
     # has already passed would report a fall that has not happened.
     last = stored if last is None else last
@@ -138,7 +142,7 @@ def rsi(closes, period=RSI_PERIOD):
     return 100.0 - 100.0 / (1 + avg_gain / avg_loss)
 
 
-def describe(closes, live=None):
+def describe(closes, live=None, live_on=None):
     """Every metric the series supports, with None for those it does not.
 
     `live` is the current session's price, which is not a close. It is what
@@ -153,11 +157,12 @@ def describe(closes, live=None):
     last = closes[-1][1] if live is None else live
     return {
         "last": last,
-        "drawdown": drawdown(closes, last=live),
+        "drawdown": drawdown(closes, last=live, on=live_on if live is not None
+                             else None),
         "vs_ma50": relative_to_average(closes, 50, last=live),
         "vs_ma200": relative_to_average(closes, 200, last=live),
         "rsi": rsi(closes if live is None
-                   else closes + [(_as_date(closes[-1][0]), live)]),
+                   else closes + [(live_on or _as_date(closes[-1][0]), live)]),
         "sessions": len(closes),
     }
 

@@ -273,3 +273,38 @@ class TestTrendUsesTheDisplayedPrice:
     def test_a_quote_newer_than_the_series_is_used(self, series):
         m = dashboard.trend("SAP.DE", price=999.0, on="2026-02-05")
         assert m["last"] == 999.0
+
+    def test_a_settled_quote_is_not_re_entered_as_live(self, series):
+        """A snapshot taken on a weekend is dated later than the close it
+        holds. Treating that close as a new observation advances Wilder's
+        smoothing with a duplicate zero change."""
+        stored_last = "2026-02-04"
+        m = dashboard.trend("SAP.DE", price=100.0, on=stored_last)
+        assert m["sessions"] == 400
+        assert m["rsi"] == dashboard.trend("SAP.DE")["rsi"]
+
+    def test_positions_passes_the_settled_date_not_the_snapshot_date(
+            self, series, monkeypatch):
+        """The wiring, not just the helper: a snapshot dated after the close
+        it holds must not re-enter that close as a live observation."""
+        seen = {}
+        monkeypatch.setattr(dashboard, "trend",
+                            lambda t, price=None, on=None: seen.update(on=on) or {})
+        snap = snapshot(date="2026-02-07")          # a Saturday snapshot
+        snap["positions"] = [{"ticker": "SAP.DE", "quantity": 1,
+                              "current_price": 100.0, "previous_close": 100.0,
+                              "currency": "EUR", "price_date": "2026-02-06"}]
+        dashboard.positions(snap, {}, {})
+        assert seen["on"] == "2026-02-06"
+
+    def test_the_snapshot_date_is_used_when_the_quote_is_unsettled(
+            self, series, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(dashboard, "trend",
+                            lambda t, price=None, on=None: seen.update(on=on) or {})
+        snap = snapshot(date="2026-02-09")
+        snap["positions"] = [{"ticker": "SAP.DE", "quantity": 1,
+                              "current_price": 100.0, "previous_close": 100.0,
+                              "currency": "EUR", "price_date": None}]
+        dashboard.positions(snap, {}, {})
+        assert seen["on"] == "2026-02-09"

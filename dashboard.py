@@ -57,9 +57,10 @@ def trend(ticker, price=None, on=None):
     # dashboard without a fresh snapshot would otherwise append a stale price
     # under a new date, inventing a session across whatever gap had passed.
     session = str(on or "")
-    live = price if price is not None and session > str(max(
-        day for day, _ in series)) else None
-    return trends.describe(series, live=live)
+    if price is None or not session or session <= str(max(
+            day for day, _ in series)):
+        return trends.describe(series)
+    return trends.describe(series, live=price, live_on=session)
 
 
 def positions(snap, by_ticker, names):
@@ -80,7 +81,7 @@ def positions(snap, by_ticker, names):
                 "ticker": p["ticker"], "qty": p["quantity"], "price": None,
                 "currency": p["currency"], "value": None, "weight": None,
                 "day_eur": None, "day_pct": None, "pnl": None, "pnl_pct": None,
-                "unpriced": True,
+                "unpriced": True, "trend": {},
             })
             continue
         value = p["quantity"] * p["current_price"] * fx
@@ -101,8 +102,12 @@ def positions(snap, by_ticker, names):
             "unpriced": False,
             # The series is in the listing's own currency, not the base, so
             # the unconverted price is the one that belongs beside it.
+            # price_date names the session the quote settled in, so where
+            # it is set the close is already stored and is not a new
+            # observation. A snapshot taken on a weekend is dated later than
+            # the close it holds, and would otherwise re-enter it as live.
             "trend": trend(p["ticker"], price=p["current_price"],
-                           on=snap.get("date")),
+                           on=p.get("price_date") or snap.get("date")),
         })
     rows.sort(key=lambda r: (r["value"] is None, -(r["value"] or 0)))
     return rows
