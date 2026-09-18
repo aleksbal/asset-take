@@ -125,3 +125,17 @@ class TestWithoutABrokerPrice:
         market([], {"IWDA.AS": (127.40, "EUR")})
         row = rz.resolve(holding(isin="IWDA.AS", broker_price=127.42))
         assert row["status"] == "ok"
+
+
+class TestExplicitTicker:
+    def test_a_supplied_ticker_is_used_before_searching(self, market):
+        """Searching the ISIN could return a different venue entirely."""
+        market(["SOMETHING.ELSE"], {"SOMETHING.ELSE": (127.40, "EUR"),
+                                    "EUNL.DE": (127.40, "EUR")})
+        row = rz.resolve(holding(ticker="EUNL.DE", broker_price=None))
+        assert row["ticker"] == "EUNL.DE"
+
+    def test_falls_back_to_searching_when_the_ticker_does_not_price(self, market):
+        market(["EUNL.DE"], {"EUNL.DE": (127.40, "EUR")})
+        row = rz.resolve(holding(ticker="DELISTED.XX", broker_price=None))
+        assert row["ticker"] == "EUNL.DE"

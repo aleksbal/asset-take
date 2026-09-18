@@ -12,6 +12,8 @@ class Holding:
     currency: str
     avg_cost: Optional[float] = None   # per share, in `currency`; absent in
                                        # sources that do not state a cost basis
+    ticker: Optional[str] = None       # where the source names an exchange
+                                       # listing explicitly, rather than only an ISIN
     broker_price: Optional[float] = None   # broker's own valuation, per share
     broker_as_of: Optional[str] = None
     venue: Optional[str] = None
@@ -46,6 +48,7 @@ def read(path):
                 currency=r["currency"],
                 avg_cost=_opt_float(r.get("avg_cost")),
                 broker_price=_opt_float(r.get("broker_price")),
+                ticker=r.get("ticker") or None,
                 broker_as_of=r.get("broker_as_of") or None,
                 venue=r.get("venue") or None, source=r.get("source") or None,
             ))

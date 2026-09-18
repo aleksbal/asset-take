@@ -27,10 +27,11 @@ and `resolve.py` maps ISIN to a Yahoo ticker. Adding a broker means one new
 adapter with `detect()` and `parse()`; nothing else changes.
 
 Number parsing is locale-ambiguous by nature: `1,234` is 1234 in English and
-1.234 in German, and no heuristic settles it. A caller that knows the locale
-must pass `decimal_sep` to `parse_number()`. The generic adapter derives it
-from the delimiter - a comma-delimited file cannot carry an unquoted decimal
-comma - and leaves it unset for semicolon and tab files, which carry no signal.
+1.234 in German. The file delimiter does NOT settle it - CSV quoting permits a
+comma inside a comma-delimited field - so do not infer locale from it. The
+generic adapter infers one locale from all of the file's numbers together and
+applies it uniformly; where there is no evidence it declines to guess rather
+than inventing a default.
 
 `avg_cost` and `broker_price` are both optional on `Holding`, and blank means
 absent, never zero - a zero cost basis reads as a 100% gain. Anything consuming

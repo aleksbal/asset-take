@@ -35,10 +35,14 @@ def _de(x):
 def pick_file(arg):
     p = Path(arg).expanduser() if arg else paths.IMPORTS
     if p.is_dir():
-        csvs = sorted(p.glob("*.csv"), key=lambda f: f.stat().st_mtime, reverse=True)
-        if not csvs:
-            sys.exit(f"no CSV files in {p}")
-        return csvs[0]
+        # Must match what adapters accept, or a supported export is reported absent.
+        found = sorted((f for f in p.iterdir()
+                        if f.suffix.lower() in adapters.generic.SUFFIXES),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+        if not found:
+            exts = ", ".join(adapters.generic.SUFFIXES)
+            sys.exit(f"no {exts} files in {p}")
+        return found[0]
     if not p.exists():
         sys.exit(f"not found: {p}")
     return p

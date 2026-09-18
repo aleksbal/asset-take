@@ -98,17 +98,34 @@ class TestPrecedence:
 
 
 class TestNumberLocale:
-    """A comma-delimited file cannot carry an unquoted decimal comma, so a
-    comma inside a value is a thousands separator. Guessing understates by
-    1000x, silently."""
+    """`1,234` is 1234 in English and 1.234 in German, and the file delimiter
+    cannot settle it - CSV quoting permits a comma inside a field. The locale
+    is inferred from all of the file's numbers together, and applied uniformly.
+    """
 
-    def test_comma_grouped_quantity_in_a_comma_delimited_file(self, tmp_path):
+    def test_english_grouping_inferred_from_a_corroborating_value(self, tmp_path):
+        """`1,234.56` can only be English, which settles `1,234` too."""
+        p = write(tmp_path, 'ticker,quantity,avg_cost\nAAPL,"1,234","1,234.56"\n')
+        h = generic.parse(p)[0]
+        assert h.quantity == 1234
+        assert h.avg_cost == pytest.approx(1234.56)
+
+    def test_quoted_german_decimal_in_a_comma_delimited_file(self, tmp_path):
+        """The inverse corruption: a comma-delimited file may quote `12,34`."""
+        p = write(tmp_path, 'ticker,quantity\nSAP.DE,"12,34"\n')
+        assert generic.parse(p)[0].quantity == pytest.approx(12.34)
+
+    def test_a_lone_ambiguous_value_is_not_guessed_at(self, tmp_path):
+        """`1,234` alone carries no evidence. The heuristic reads it as a
+        decimal; inventing a locale from the delimiter would corrupt the
+        German case instead. Documented, not asserted as correct."""
         p = write(tmp_path, 'ticker,quantity\nAAPL,"1,234"\n')
-        assert generic.parse(p)[0].quantity == 1234
+        assert generic.parse(p)[0].quantity == pytest.approx(1.234)
 
-    def test_comma_grouped_cost_in_a_comma_delimited_file(self, tmp_path):
-        p = write(tmp_path, 'ticker,quantity,avg_cost\nAAPL,10,"1,234.56"\n')
-        assert generic.parse(p)[0].avg_cost == pytest.approx(1234.56)
+    def test_one_row_settles_the_locale_for_the_whole_file(self, tmp_path):
+        p = write(tmp_path, 'ticker,quantity\nSAP.DE,"12,34"\nAAPL,"1,234"\n')
+        assert [h.quantity for h in generic.parse(p)] == [
+            pytest.approx(12.34), pytest.approx(1.234)]
 
     def test_decimal_comma_still_works_in_a_semicolon_file(self, tmp_path):
         """German exports use semicolons precisely so the comma stays free."""
@@ -124,3 +141,37 @@ class TestNumberLocale:
     def test_plain_decimal_point_is_unaffected(self, tmp_path):
         p = write(tmp_path, "ticker,quantity\nAAPL,30.5\n")
         assert generic.parse(p)[0].quantity == pytest.approx(30.5)
+
+
+class TestExplicitTicker:
+    """A file naming an exchange listing means that listing, not whatever a
+    search for the ISIN returns first."""
+
+    def test_ticker_is_kept_alongside_the_isin(self, tmp_path):
+        p = write(tmp_path, "isin,ticker,quantity\nIE00B4L5Y983,EUNL.DE,100\n")
+        h = generic.parse(p)[0]
+        assert h.isin == "IE00B4L5Y983"
+        assert h.ticker == "EUNL.DE"
+
+    def test_ticker_only_file_still_works(self, tmp_path):
+        p = write(tmp_path, "ticker,quantity\nEUNL.DE,100\n")
+        h = generic.parse(p)[0]
+        assert h.ticker == "EUNL.DE"
+        assert h.isin == "EUNL.DE"
+
+
+class TestFileDiscovery:
+    """Default discovery must match what adapters accept, or a supported
+    export in the imports directory is reported as absent."""
+
+    @pytest.mark.parametrize("suffix", [".csv", ".tsv", ".txt"])
+    def test_accepted_suffixes_are_discoverable(self, tmp_path, suffix):
+        import import_holdings
+        (tmp_path / f"export{suffix}").write_text("ticker\tquantity\nSAP.DE\t18\n")
+        assert import_holdings.pick_file(tmp_path).suffix == suffix
+
+    def test_declared_suffixes_match_what_detect_accepts(self, tmp_path):
+        for suffix in generic.SUFFIXES:
+            p = tmp_path / f"x{suffix}"
+            p.write_text("ticker,quantity\nSAP.DE,18\n")
+            assert generic.detect(p), f"{suffix} declared but not detected"

@@ -131,15 +131,18 @@ def resolve(holding, existing=None):
     if existing and existing.get("status") == "manual":
         return existing
 
-    # A source may already give a ticker rather than an ISIN.
-    if TICKER.match(holding.isin or "") and not ISIN.match(holding.isin or ""):
-        px, cur = _price(holding.isin)
+    # An explicitly supplied ticker names the listing the holder actually
+    # holds; searching the ISIN could return a different venue entirely.
+    given = holding.ticker or (holding.isin if TICKER.match(holding.isin or "")
+                               and not ISIN.match(holding.isin or "") else None)
+    if given:
+        px, cur = _price(given)
         if px is not None and cur == holding.currency:
             if holding.broker_price:
                 dev = abs(px - holding.broker_price) / holding.broker_price
-                return _row(holding, holding.isin, cur, round(px, 4),
+                return _row(holding, given, cur, round(px, 4),
                             round(dev * 100, 2), "ok" if dev <= TOLERANCE else "check")
-            return _row(holding, holding.isin, cur, round(px, 4), "", "unverified")
+            return _row(holding, given, cur, round(px, 4), "", "unverified")
 
     best = None
     for sym in _candidates(holding.isin, holding.name):
