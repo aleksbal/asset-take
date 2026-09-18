@@ -17,7 +17,10 @@ import pathlib
 import tempfile
 from datetime import date
 
+import yfinance as yf
+
 import paths
+import quotes
 
 COLUMNS = ["date", "close", "source"]
 YAHOO, LOCAL = "yahoo", "local"
@@ -116,19 +119,31 @@ def record(ticker, close, on=None):
 
 
 def _fetch(ticker):
-    """Daily closes from the provider as {iso date: close}, empty on failure."""
+    """Daily closes from the provider as {iso date: close}, empty on failure.
+
+    Normalised to the major unit, like every other price we store. The daily
+    close arrives already converted, so leaving these raw would mix pence with
+    pounds in one series - and the resulting hundredfold step reads as a
+    corporate action, re-seeding the series back to the raw values on every
+    run.
+    """
     try:
-        import yfinance as yf
-        hist = yf.Ticker(ticker).history(period=BACKFILL_PERIOD, interval="1d",
-                                         auto_adjust=True)
+        handle = yf.Ticker(ticker)
+        hist = handle.history(period=BACKFILL_PERIOD, interval="1d",
+                              auto_adjust=True)
     except Exception:
         return {}
     if hist is None or hist.empty or "Close" not in hist:
         return {}
+    try:
+        currency = handle.fast_info["currency"]
+    except Exception:
+        currency = None
     out = {}
     for ts, close in hist["Close"].items():
         if close == close:          # NaN closes are gaps, not prices
-            out[ts.date().isoformat()] = float(close)
+            out[ts.date().isoformat()] = quotes.as_major(float(close),
+                                                         currency)[0]
     return out
 
 

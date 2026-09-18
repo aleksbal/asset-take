@@ -223,3 +223,37 @@ class TestRefreshWindow:
         for _ in range(3):
             price_history.refresh("SAP.DE", fetch=window)
         assert len(price_history.load("SAP.DE")) == 4
+
+
+class TestProviderHistoryUnits:
+    """The provider serves history in the venue's quote unit while the daily
+    close arrives already converted. Storing them unscaled mixes pence with
+    pounds in one series, and the hundredfold step then reads as a corporate
+    action that re-seeds back to the raw values on every run."""
+
+    @pytest.fixture
+    def pence(self, monkeypatch):
+        import pandas as pd
+
+        class Handle:
+            fast_info = {"currency": "GBp"}
+
+            def history(self, **kw):
+                idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+                return pd.DataFrame({"Close": [4200.0, 4208.0]}, index=idx)
+
+        monkeypatch.setattr(price_history.yf, "Ticker", lambda t: Handle())
+
+    def test_downloaded_history_is_stored_in_the_major_unit(self, pence):
+        assert price_history._fetch("BATS.L") == {"2026-09-16": 42.0,
+                                                  "2026-09-17": 42.08}
+
+    def test_a_seeded_series_agrees_with_the_daily_close(self, pence):
+        """Both sides of the handover must be on one scale, or the next run
+        reads the step as a split."""
+        price_history.backfill("BATS.L")
+        _, _, rescaled = price_history.update({"BATS.L": 42.10},
+                                              on=date(2026, 9, 18))
+        assert rescaled == 0
+        series = price_history.load("BATS.L")
+        assert max(series.values(), key=lambda v: v[0])[0] < 100

@@ -66,11 +66,19 @@ holding's currency still wins where one exists, because converting introduces
 a rate we hold no history for.
 
 A price is normalised to its currency's major unit by every layer that reads
-one from the provider, via `quotes.as_major`. Resolution and valuation each
-fetch their own prices - `fetch_prices()` downloads closes directly and never
-passes through resolution - so normalising in one of them leaves the other a
-hundredfold out while the stored row looks correct. That is why the table
-lives in its own module and not beside either caller.
+one from the provider, via `quotes.as_major`. Three paths fetch prices
+independently and each must convert:
+
+- `resolve._price()` - `fast_info`, for verifying a candidate
+- `portfolio_monitor.fetch_prices()` - `yf.download`, for the daily valuation
+- `price_history._fetch()` - `Ticker.history`, for seeding a series
+
+This cost three rounds of review to get right, one path at a time, because
+each fix looked complete on its own. Normalising in one leaves the others a
+hundredfold out while the row they wrote looks correct, and in the series the
+mismatch compounds: a pence-scaled seed beside a pound-scaled daily close
+reads as a corporate action and re-seeds back to the raw values every run.
+Before adding a fourth reader, convert at the boundary.
 
 A price is normalised to its currency's major unit the moment it is read.
 London quotes pence and reports `GBp`; downstream valuation gives an
