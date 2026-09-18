@@ -12,6 +12,8 @@ from pathlib import Path
 
 import canonical
 import paths
+import price_history
+import trends
 
 ROOT = Path(__file__).parent
 OUT = paths.DASHBOARD
@@ -34,6 +36,33 @@ def load():
     return snaps, by_ticker, names
 
 
+def trend(ticker, price=None, on=None):
+    """Descriptive metrics for one position, or {} where there is no series.
+
+    Facts, not signals: how far below a recent peak the price sits and which
+    side of its averages it is on. What to do about that is not something a
+    price series knows.
+
+    The stored series deliberately excludes the current session, because an
+    in-progress close cannot be corrected once written. The dashboard shows
+    that live price though, so it is added here for the calculation only - a
+    position that moved sharply today would otherwise display today's price
+    beside yesterday's drawdown. Nothing is written back.
+    """
+    series = [(day, close) for day, (close, _) in
+              price_history.load(ticker).items()]
+    if not series:
+        return {}
+    # Only where the quote is newer than everything stored. Regenerating the
+    # dashboard without a fresh snapshot would otherwise append a stale price
+    # under a new date, inventing a session across whatever gap had passed.
+    session = str(on or "")
+    if price is None or not session or session <= str(max(
+            day for day, _ in series)):
+        return trends.describe(series)
+    return trends.describe(series, live=price, live_on=session)
+
+
 def positions(snap, by_ticker, names):
     """Rows for the table and donut.
 
@@ -52,7 +81,7 @@ def positions(snap, by_ticker, names):
                 "ticker": p["ticker"], "qty": p["quantity"], "price": None,
                 "currency": p["currency"], "value": None, "weight": None,
                 "day_eur": None, "day_pct": None, "pnl": None, "pnl_pct": None,
-                "unpriced": True,
+                "unpriced": True, "trend": {},
             })
             continue
         value = p["quantity"] * p["current_price"] * fx
@@ -71,6 +100,14 @@ def positions(snap, by_ticker, names):
             "pnl": (value - cost) if cost else None,
             "pnl_pct": ((value / cost - 1) * 100) if cost else None,
             "unpriced": False,
+            # The series is in the listing's own currency, not the base, so
+            # the unconverted price is the one that belongs beside it.
+            # price_date names the session the quote settled in, so where
+            # it is set the close is already stored and is not a new
+            # observation. A snapshot taken on a weekend is dated later than
+            # the close it holds, and would otherwise re-enter it as live.
+            "trend": trend(p["ticker"], price=p["current_price"],
+                           on=p.get("price_date") or snap.get("date")),
         })
     rows.sort(key=lambda r: (r["value"] is None, -(r["value"] or 0)))
     return rows
@@ -149,12 +186,42 @@ def donut(rows, size=220, thick=26):
             f'<ul class="legend">{legend}</ul>')
 
 
+def _peak_cell(t):
+    """Distance below a six-month peak, and how long since it was set.
+
+    Both halves matter. A fall says how far; the days say whether the price
+    is still moving or stopped some time ago - which is the case a table of
+    current values cannot show at all.
+    """
+    d = (t or {}).get("drawdown")
+    if not d:
+        return '<td class="n none">—</td>'
+    days = d["days_since_peak"]
+    return (f'<td class="n {"dn" if d["pct"] < -5 else ""}">{d["pct"]:+.1f}%'
+            f'<span class="peak-age">{days}d ago</span></td>')
+
+
+def _ma_cell(t):
+    v = (t or {}).get("vs_ma200")
+    if v is None:
+        return '<td class="n none">—</td>'
+    return f'<td class="n {"up" if v >= 0 else "dn"}">{v:+.1f}%</td>'
+
+
+def _rsi_cell(t):
+    v = (t or {}).get("rsi")
+    if v is None:
+        return '<td class="n none">—</td>'
+    return f'<td class="n">{v:.0f}</td>'
+
+
 def _row_html(r):
     if r.get("unpriced"):
         return (f'<tr class="unpriced"><td class="nm" title="{r["name"]}">{r["name"]}'
                 f'<span class="tk">{r["ticker"]}</span></td>'
                 f'<td class="n">{r["qty"]:g}</td>'
-                f'<td class="n" colspan="5">no price available</td></tr>')
+                f'<td class="n" colspan="8">no price available</td></tr>')
+    t = r.get("trend") or {}
     return (f'<tr><td class="nm" title="{r["name"]}">{r["name"]}<span class="tk">{r["ticker"]}</span></td>'
             f'<td class="n">{r["qty"]:g}</td>'
             f'<td class="n">{eur(r["price"], 2)} {r["currency"]}</td>'
@@ -162,7 +229,8 @@ def _row_html(r):
             f'<td class="n w"><span class="bar" style="--p:{r["weight"]:.1f}%"></span>{r["weight"]:.1f}%</td>'
             f'<td class="n {"up" if r["day_pct"]>=0 else "dn"}">{r["day_pct"]:+.2f}%</td>'
             f'<td class="n {"up" if (r["pnl"] or 0)>=0 else "dn"}">'
-            f'{(eur(r["pnl"]) + " (" + format(r["pnl_pct"], "+.1f") + "%)") if r["pnl"] is not None else "—"}</td></tr>')
+            f'{(eur(r["pnl"]) + " (" + format(r["pnl_pct"], "+.1f") + "%)") if r["pnl"] is not None else "—"}</td>'
+            f'{_peak_cell(t)}{_ma_cell(t)}{_rsi_cell(t)}</tr>')
 
 
 def table(rows):
@@ -170,6 +238,9 @@ def table(rows):
     return f"""<table><thead><tr>
       <th>Position</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Value</th>
       <th class="n">Weight</th><th class="n">Day</th><th class="n">P&amp;L</th>
+      <th class="n" title="Below its highest close of the last six months, and how long since that high">From 6m high</th>
+      <th class="n" title="Above or below the average close of the last 200 sessions">vs 200d</th>
+      <th class="n" title="Relative strength index, 14 sessions. 30 and 70 are conventional markers, not thresholds to act on">RSI</th>
     </tr></thead><tbody>{body}</tbody></table>"""
 
 
@@ -289,6 +360,11 @@ td{{padding:9px 10px;border-bottom:1px solid var(--line)}}
 tbody tr:hover{{background:var(--surface-0)}}
 .n{{text-align:right}}
 .nm{{font-weight:500;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}} .tk{{display:block;font-size:11px;color:var(--text-muted);font-weight:400}}
+/* A block inside the drawdown cell, never on a cell itself: display:block
+   on a td drops it out of table layout and shears the row sideways. */
+.peak-age{{display:block;font-size:11px;color:var(--text-muted);font-weight:400}}
+.none{{color:var(--text-muted)}}
+th[title]{{cursor:help}}
 .w{{position:relative}}
 .bar{{position:absolute;left:10px;right:10px;bottom:3px;height:2px;background:var(--line);
   border-radius:2px}}

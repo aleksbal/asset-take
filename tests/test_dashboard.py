@@ -4,6 +4,10 @@ This is where the missing-cost bug surfaced: `canonical.read()` raised on the
 empty field, so any import from a source without cost data killed the whole
 dashboard rather than simply omitting P&L.
 """
+from datetime import date
+
+import pytest
+
 import canonical
 import dashboard
 from canonical import Holding
@@ -172,3 +176,136 @@ class TestMissingCostNote:
         html = (tmp_path / "out.html").read_text(encoding="utf-8")
         assert "no cost basis" in html
         assert "another currency" not in html
+
+
+class TestTrendColumns:
+    """Trend metrics are shown as facts. A position with no series shows an
+    em dash rather than a blank or a zero - absent and neutral are different
+    claims, and a reader cannot tell them apart from an empty cell."""
+
+    def trended(self, **kw):
+        base = {"drawdown": {"pct": -12.4, "days_since_peak": 78,
+                             "peak": 100.0, "peak_on": "2026-07-01"},
+                "vs_ma50": -3.2, "vs_ma200": -8.1, "rsi": 41.0,
+                "last": 87.6, "sessions": 505}
+        base.update(kw)
+        return base
+
+    def test_a_drawdown_shows_the_fall_and_the_days(self):
+        html = dashboard._peak_cell(self.trended())
+        assert "-12.4%" in html and "78d ago" in html
+        assert 'class="peak-age"' in html   # a span, never the cell itself
+
+    def test_a_position_without_a_series_shows_a_dash(self):
+        assert "—" in dashboard._peak_cell({})
+        assert "—" in dashboard._ma_cell({})
+        assert "—" in dashboard._rsi_cell({})
+
+    def test_an_absent_metric_is_not_rendered_as_zero(self):
+        """A missing 200-day average is not 'at its average'."""
+        assert "0" not in dashboard._ma_cell({"vs_ma200": None})
+
+    def test_a_small_fall_is_not_marked_as_a_decline(self):
+        """Colour is a claim. A 2% wobble is not one."""
+        assert "dn" not in dashboard._peak_cell(
+            self.trended(drawdown={"pct": -2.0, "days_since_peak": 5,
+                                   "peak": 100.0, "peak_on": "2026-09-13"}))
+
+    def test_the_table_carries_the_trend_headers(self):
+        rows = dashboard.positions(snapshot(), {}, {})
+        html = dashboard.table(rows)
+        assert "From 6m high" in html and "vs 200d" in html and "RSI" in html
+
+    def test_an_unpriced_row_still_spans_the_full_table(self):
+        """The colspan has to match the header, or the row shears sideways."""
+        markup = dashboard.table([])
+        header = markup.count("<th") - markup.count("<thead")   # <thead matches <th
+        row = dashboard._row_html({"unpriced": True, "name": "X", "ticker": "X",
+                                   "qty": 1})
+        assert int(row.split('colspan="')[1].split('"')[0]) == header - 2
+
+
+class TestTrendUsesTheDisplayedPrice:
+    """The stored series excludes the current session, because an in-progress
+    close cannot be corrected once written. The row shows that live price
+    though, so a position that moved sharply today would otherwise display
+    today's price beside yesterday's drawdown."""
+
+    @pytest.fixture
+    def series(self, monkeypatch):
+        from datetime import date, timedelta
+        start = date(2025, 1, 1)
+        stored = {(start + timedelta(days=i)).isoformat(): (100.0, "yahoo")
+                  for i in range(400)}
+        monkeypatch.setattr(dashboard.price_history, "load",
+                            lambda t: dict(stored))
+        return stored
+
+    def test_the_live_price_is_included(self, series):
+        m = dashboard.trend("SAP.DE", price=150.0, on=date(2026, 2, 5))
+        assert m["last"] == 150.0
+
+    def test_it_is_not_written_back(self, series, monkeypatch):
+        """Transient. Writing it would fix an intraday value as a close."""
+        written = []
+        monkeypatch.setattr(dashboard.price_history, "record",
+                            lambda *a, **k: written.append(a))
+        dashboard.trend("SAP.DE", price=150.0, on=date(2026, 2, 5))
+        assert written == []
+
+    def test_a_session_already_stored_is_not_duplicated(self, series):
+        m = dashboard.trend("SAP.DE", price=999.0, on=date(2025, 6, 1))
+        assert m["last"] == 100.0      # the stored close for that day wins
+
+    def test_without_a_price_the_series_stands_alone(self, series):
+        assert dashboard.trend("SAP.DE")["last"] == 100.0
+
+    def test_no_series_means_no_metrics(self, monkeypatch):
+        monkeypatch.setattr(dashboard.price_history, "load", lambda t: {})
+        assert dashboard.trend("SAP.DE", price=150.0) == {}
+
+    def test_a_stale_quote_does_not_invent_a_session(self, series):
+        """Regenerating the dashboard without a fresh snapshot would append
+        the last snapshot's price under a new date, fabricating a session
+        across whatever gap had passed and resetting days_since_peak."""
+        m = dashboard.trend("SAP.DE", price=999.0, on="2025-06-01")
+        assert m["last"] == 100.0
+
+    def test_a_quote_newer_than_the_series_is_used(self, series):
+        m = dashboard.trend("SAP.DE", price=999.0, on="2026-02-05")
+        assert m["last"] == 999.0
+
+    def test_a_settled_quote_is_not_re_entered_as_live(self, series):
+        """A snapshot taken on a weekend is dated later than the close it
+        holds. Treating that close as a new observation advances Wilder's
+        smoothing with a duplicate zero change."""
+        stored_last = "2026-02-04"
+        m = dashboard.trend("SAP.DE", price=100.0, on=stored_last)
+        assert m["sessions"] == 400
+        assert m["rsi"] == dashboard.trend("SAP.DE")["rsi"]
+
+    def test_positions_passes_the_settled_date_not_the_snapshot_date(
+            self, series, monkeypatch):
+        """The wiring, not just the helper: a snapshot dated after the close
+        it holds must not re-enter that close as a live observation."""
+        seen = {}
+        monkeypatch.setattr(dashboard, "trend",
+                            lambda t, price=None, on=None: seen.update(on=on) or {})
+        snap = snapshot(date="2026-02-07")          # a Saturday snapshot
+        snap["positions"] = [{"ticker": "SAP.DE", "quantity": 1,
+                              "current_price": 100.0, "previous_close": 100.0,
+                              "currency": "EUR", "price_date": "2026-02-06"}]
+        dashboard.positions(snap, {}, {})
+        assert seen["on"] == "2026-02-06"
+
+    def test_the_snapshot_date_is_used_when_the_quote_is_unsettled(
+            self, series, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(dashboard, "trend",
+                            lambda t, price=None, on=None: seen.update(on=on) or {})
+        snap = snapshot(date="2026-02-09")
+        snap["positions"] = [{"ticker": "SAP.DE", "quantity": 1,
+                              "current_price": 100.0, "previous_close": 100.0,
+                              "currency": "EUR", "price_date": None}]
+        dashboard.positions(snap, {}, {})
+        assert seen["on"] == "2026-02-09"
