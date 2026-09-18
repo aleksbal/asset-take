@@ -20,7 +20,7 @@ from datetime import date
 import yfinance as yf
 
 import paths
-import quotes
+from quotes import Quote
 
 COLUMNS = ["date", "close", "source"]
 YAHOO, LOCAL = "yahoo", "local"
@@ -153,23 +153,20 @@ def _fetch(ticker, unit=None):
             currency = handle.fast_info["currency"]
         except Exception:
             currency = None
-    if not currency:
-        # No unit means no scale, and an unscaled pence series would sit
-        # beside pound closes and read as a corporate action every run.
-        # Nothing is stored and no marker is left, so this simply retries.
-        return {}
+
     out = {}
-    today = date.today()
     for ts, close in hist["Close"].items():
         if close != close:          # NaN closes are gaps, not prices
             continue
-        day = ts.date()
-        if day >= today:
-            # Today's bar may still be in progress, and record() will not
-            # overwrite a date, so storing it now fixes an intraday value as
-            # that session's close. The same rule the daily path applies.
+        # Quote refuses an unknown unit and marks an unclosed session, so
+        # both of the ways a bar can be unusable are decided in one place.
+        # An unscaled series would sit beside converted closes and read as a
+        # corporate action; an in-progress bar would fix an intraday value as
+        # that day's close, which record() then never corrects.
+        quote = Quote.from_provider(close, currency, session=ts.date())
+        if quote is None or not quote.settled:
             continue
-        out[day.isoformat()] = quotes.as_major(float(close), currency)[0]
+        out[quote.session.isoformat()] = quote.price
     return out
 
 

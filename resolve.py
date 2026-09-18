@@ -20,8 +20,9 @@ from pathlib import Path
 
 import yfinance as yf
 
+import fx
 import paths
-import quotes
+from quotes import Quote
 
 MAP_PATH = paths.ISIN_MAP
 TOLERANCE = 0.05  # fraction by which a candidate may differ from the broker price
@@ -118,19 +119,20 @@ def fill_display_names(rows):
 
 
 def _price(ticker):
-    """Live price and currency, normalised to the currency's major unit."""
+    """Live price and currency, normalised to the currency's major unit.
+
+    Returns (None, None) where the quote cannot be read at all - including
+    when its unit is unknown, since an unscaled price is indistinguishable
+    from a scaled one.
+    """
     try:
         fi = yf.Ticker(ticker).fast_info
-        return _as_major(float(fi["last_price"]), fi["currency"])
+        quote = Quote.from_provider(fi["last_price"], fi["currency"])
     except Exception:
         return None, None
+    return (quote.price, quote.currency) if quote else (None, None)
 
 
-_FX_CACHE = {}
-
-# Re-exported: the quote unit is shared with the valuation layer, which reads
-# its own prices from the provider and must scale them identically.
-_as_major = quotes.as_major
 
 
 def _fx(currency, base):
@@ -140,23 +142,7 @@ def _fx(currency, base):
     priced at a rate of one - a fabricated rate would put a plausible number
     on the wrong instrument, which is exactly what verification exists to stop.
     """
-    if currency == base:
-        return 1.0
-    key = (currency, base)
-    if key not in _FX_CACHE:
-        _FX_CACHE[key] = _fx_rate(currency, base)
-    return _FX_CACHE[key]
-
-
-def _fx_rate(currency, base):
-    for pair, invert in ((f"{currency}{base}=X", False), (f"{base}{currency}=X", True)):
-        try:
-            px = float(yf.Ticker(pair).fast_info["last_price"])
-            if px:
-                return 1.0 / px if invert else px
-        except Exception:
-            continue
-    return None
+    return fx.rate(currency, base)
 
 
 def _repriced(holding, existing):

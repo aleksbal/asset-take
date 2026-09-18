@@ -1,17 +1,18 @@
-"""Quote units.
+"""A price with the facts that make it mean something.
 
-Some venues quote a minor unit: London reports pence under the code `GBp`,
-Johannesburg cents under `ZAc`. A price in those units is a hundredth of the
-currency it names, and valuation downstream has no idea - an unrecognised code
-is given an exchange rate of 1.0, so a 4,208 pence share is valued as 4,208
-pounds.
+A bare float cannot say whether it is pounds or pence, or whether the session
+it came from has closed. Six review rounds found the same defect in six
+places: a provider price reaching storage or valuation with its unit left
+behind, where 4,208 pence is a perfectly valid number that happens to be a
+hundred times the truth.
 
-This lives on its own because the first attempt at it did not. Resolution
-normalised its own prices while the valuation layer downloaded its own quotes
-and bypassed the scaling entirely, so the stored row was right and every
-snapshot was still a hundredfold out. Any layer that reads a price from the
-provider converts it here first.
+`Quote` exists so that cannot be written. It is constructed at the provider
+boundary and normalises there, so holding one means the unit is already known
+and applied. A later reader has nothing to forget.
 """
+from dataclasses import dataclass
+from datetime import date
+from typing import Optional
 
 # Minor unit -> (major currency, scale). GBP is deliberately absent: it is the
 # major unit, and scaling it divides genuine pound prices by a hundred.
@@ -24,3 +25,37 @@ def as_major(price, currency):
         return None, currency
     major, scale = MINOR_UNITS.get(currency, (currency, 1.0))
     return price * scale, major
+
+
+@dataclass(frozen=True)
+class Quote:
+    """A provider price, already in its currency's major unit.
+
+    `session` is the trading day the price belongs to, and `settled` whether
+    that day has closed. An unsettled quote is fine to value with - a
+    dashboard wants the live number - but must not be written into a series
+    as that day's close, because nothing corrects it afterwards.
+    """
+    price: float
+    currency: str
+    session: Optional[date] = None
+    settled: bool = False
+
+    @classmethod
+    def from_provider(cls, price, unit, session=None, today=None):
+        """Build from what a provider returned, or None if it cannot be read.
+
+        Returns None where the unit is unknown: an unscaled price is
+        indistinguishable from a scaled one, and guessing has been the single
+        most expensive assumption in this codebase.
+        """
+        if price is None or not unit:
+            return None
+        value, currency = as_major(float(price), unit)
+        settled = bool(session) and session < (today or date.today())
+        return cls(price=value, currency=currency, session=session,
+                   settled=settled)
+
+    def converted(self, base, fx, on=None):
+        """This price in `base`, or None where the rate is unavailable."""
+        return fx.convert(self.price, self.currency, base, on=on)

@@ -16,7 +16,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional
 
-import quotes
+import fx as fx_service
+from quotes import Quote
 
 try:
     import yfinance as yf
@@ -168,35 +169,24 @@ def load_portfolio(csv_path: str) -> list[Position]:
 
 
 def fetch_fx_rates(currencies: set[str], base_currency: str) -> dict[str, float]:
-    """Fetch FX rates to convert all currencies to base currency."""
-    fx_rates = {base_currency: 1.0}
+    """Rates converting each currency to the base, omitting any unavailable.
 
+    A missing rate is left out rather than defaulted to 1.0. The old fallback
+    valued a foreign holding as though it were domestic and said so only in a
+    warning nobody reads - an error of whatever the exchange rate happens to
+    be, reported as a price.
+    """
+    rates = {base_currency: 1.0}
     for currency in currencies:
         if currency == base_currency:
             continue
-
-        # Yahoo Finance FX format: EURUSD=X
-        pair = f"{currency}{base_currency}=X"
-        try:
-            ticker = yf.Ticker(pair)
-            hist = ticker.history(period="1d")
-            if not hist.empty:
-                fx_rates[currency] = hist['Close'].iloc[-1]
-            else:
-                # Try reverse pair
-                pair_rev = f"{base_currency}{currency}=X"
-                ticker_rev = yf.Ticker(pair_rev)
-                hist_rev = ticker_rev.history(period="1d")
-                if not hist_rev.empty:
-                    fx_rates[currency] = 1.0 / hist_rev['Close'].iloc[-1]
-                else:
-                    print(f"WARNING: Could not fetch FX rate for {currency}/{base_currency}, using 1.0")
-                    fx_rates[currency] = 1.0
-        except Exception as e:
-            print(f"WARNING: FX fetch error for {currency}: {e}")
-            fx_rates[currency] = 1.0
-
-    return fx_rates
+        value = fx_service.rate(currency, base_currency)
+        if value is None:
+            print(f"WARNING: no {currency}/{base_currency} rate; positions in "
+                  f"{currency} will be left unvalued rather than misvalued")
+            continue
+        rates[currency] = value
+    return rates
 
 
 def _quote_currency(ticker: str) -> Optional[str]:
@@ -238,28 +228,27 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                 # A download returns the venue's own quote unit. London sends
                 # pence; valuing that with the pound's rate overstates the
                 # position a hundredfold. The unit is recorded at resolution
-                # so this does not depend on a lookup that can fail - and an
-                # unconfirmed unit leaves the position unpriced, because a
-                # failed lookup is indistinguishable from a major-unit quote.
+                # so this does not depend on a lookup that can fail.
                 unit = pos.quote_currency or _quote_currency(pos.ticker)
-                if not unit:
+                quote = Quote.from_provider(pos.current_price, unit,
+                                            session=closes.index[-1].date())
+                if quote is None:
+                    # An unconfirmed unit is indistinguishable from a major
+                    # one, so the position is left unpriced. The dashboard
+                    # reports that; a hundredfold overstatement it cannot.
                     print(f"WARNING: no quote unit for {pos.ticker}; "
                           f"leaving it unpriced rather than assuming one")
                     pos.current_price = pos.previous_close = None
                 else:
-                    pos.current_price, _ = quotes.as_major(pos.current_price, unit)
-                    pos.previous_close, _ = quotes.as_major(pos.previous_close, unit)
-                    # The last bar is the last *settled* session, which on a
-                    # weekend or before a close is not today. A bar dated
-                    # today may still be in progress, and the provider gives
-                    # no flag for it - so it is left unrecorded rather than
-                    # written as a close that can never be corrected. The
-                    # series lags a session; the alternative is a permanent
-                    # intraday value. The live price itself is still used for
-                    # the snapshot, which is a point-in-time valuation.
-                    bar = closes.index[-1].date()
-                    pos.price_date = (bar.isoformat()
-                                      if bar < datetime.now().date() else None)
+                    pos.current_price = quote.price
+                    pos.previous_close = Quote.from_provider(
+                        pos.previous_close, unit).price
+                    # Only a settled session may be written into a series: an
+                    # in-progress bar recorded as a close is never corrected.
+                    # The live price still feeds the snapshot, which is a
+                    # point-in-time valuation and wants it.
+                    pos.price_date = (quote.session.isoformat()
+                                      if quote.settled else None)
 
             # Get company name
             try:
@@ -294,7 +283,14 @@ def calculate_report(positions: list[Position], base_currency: str,
         if pos.current_price is None:
             continue
 
-        fx_rate = fx_rates.get(pos.currency, 1.0)
+        # No rate means no value. Defaulting to 1.0 here would undo the point
+        # of omitting it above: a USD holding counted as though it were EUR,
+        # wrong by whatever the exchange rate is. Unpriced is reported;
+        # misvalued is not.
+        if pos.currency not in fx_rates:
+            pos.current_price = pos.previous_close = None
+            continue
+        fx_rate = fx_rates[pos.currency]
 
         # Calculate position value in base currency
         position_value = pos.quantity * pos.current_price * fx_rate

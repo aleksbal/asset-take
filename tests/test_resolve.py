@@ -323,22 +323,13 @@ class TestPinnedRows:
 
 
 class TestMinorUnitQuotes:
-    """London quotes pence, Johannesburg cents. The resolved row is written to
-    positions.csv and valued downstream, where an unrecognised code such as
-    GBp is given an exchange rate of 1.0 - so a 4,208 pence share is valued as
-    4,208 pounds. Normalising at the comparison alone would not have helped:
-    verification passed while the stored row stayed 100x out.
+    """London quotes pence. The resolved row is written to positions.csv and
+    valued downstream, so normalising at the comparison alone would not have
+    helped: verification passed while the stored row stayed 100x out.
+
+    The conversion itself is covered in test_quotes; these cover the path
+    through resolution.
     """
-
-    def test_pence_becomes_pounds(self):
-        assert rz._as_major(4208.0, "GBp") == (42.08, "GBP")
-
-    def test_pounds_are_left_alone(self):
-        """GBP is the major unit. Scaling it here divided real prices by 100."""
-        assert rz._as_major(42.08, "GBP") == (42.08, "GBP")
-
-    def test_an_unknown_currency_passes_through(self):
-        assert rz._as_major(100.0, "USD") == (100.0, "USD")
 
     def test_the_live_price_is_normalised_before_anything_sees_it(self,
                                                                  monkeypatch):

@@ -5,9 +5,12 @@ valuation layer downloaded its own quotes and bypassed the scaling, so the
 stored row was right and every snapshot was still a hundredfold out. These
 tests cover the shared conversion and both layers that must apply it.
 """
+from datetime import date
+
 import pytest
 
 import quotes
+from quotes import Quote
 
 
 class TestConversion:
@@ -41,7 +44,11 @@ class TestValuationLayerApplies:
         import portfolio_monitor as pm
         import pandas as pd
 
-        frame = pd.DataFrame({"Close": [4200.0, 4208.0]})
+        # A real download is indexed by trading day. Without one the date
+        # handling raised and was swallowed, so this passed on the back of an
+        # exception rather than on the scaling it claims to test.
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0]}, index=idx)
         monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
 
         class Quote:
@@ -110,3 +117,83 @@ class TestUnconfirmedUnit:
                           quote_currency="GBp")
         [out] = pm.fetch_prices([pos])
         assert out.price_date == "2026-09-17"
+
+
+class TestMissingRate:
+    """An unavailable rate used to default to 1.0, valuing a foreign holding
+    as though it were domestic - wrong by whatever the exchange rate is, and
+    reported as a price."""
+
+    def test_a_currency_without_a_rate_is_omitted(self, monkeypatch):
+        import portfolio_monitor as pm
+        monkeypatch.setattr(pm.fx_service, "rate",
+                            lambda c, b, on=None: None if c == "XXX" else 0.87)
+        rates = pm.fetch_fx_rates({"USD", "XXX"}, "EUR")
+        assert rates == {"EUR": 1.0, "USD": 0.87}
+
+    def test_a_position_without_a_rate_is_left_unvalued(self, monkeypatch):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="X.QQ", quantity=10, currency="XXX",
+                          current_price=100.0, previous_close=100.0)
+        report = pm.calculate_report([pos], "EUR", {"EUR": 1.0},
+                                     pm.AlertConfig())
+        assert report.total_value == 0
+        assert pos.current_price is None
+
+    def test_a_position_with_a_rate_is_valued(self, monkeypatch):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="AAPL", quantity=10, currency="USD",
+                          current_price=100.0, previous_close=100.0)
+        report = pm.calculate_report([pos], "EUR", {"EUR": 1.0, "USD": 0.9},
+                                     pm.AlertConfig())
+        assert report.total_value == pytest.approx(900.0)
+
+
+class TestQuoteType:
+    """A bare float cannot say whether it is pounds or pence, or whether its
+    session has closed. Six review rounds found that same gap in six places.
+    A Quote cannot be built without the unit, so a later reader has nothing
+    left to forget."""
+
+    TODAY = date(2026, 9, 18)
+
+    def test_a_pence_quote_arrives_in_pounds(self):
+        q = Quote.from_provider(4208.0, "GBp", session=date(2026, 9, 17),
+                                today=self.TODAY)
+        assert (q.price, q.currency) == (42.08, "GBP")
+
+    def test_an_unknown_unit_yields_no_quote(self):
+        """Not a quote in an assumed unit. Guessing has been the single most
+        expensive assumption in this codebase."""
+        assert Quote.from_provider(4208.0, None) is None
+        assert Quote.from_provider(4208.0, "") is None
+
+    def test_an_absent_price_yields_no_quote(self):
+        assert Quote.from_provider(None, "GBp") is None
+
+    def test_a_closed_session_is_settled(self):
+        q = Quote.from_provider(100.0, "EUR", session=date(2026, 9, 17),
+                                today=self.TODAY)
+        assert q.settled
+
+    def test_todays_session_is_not_settled(self):
+        """The bar may still be in progress and the provider flags nothing."""
+        q = Quote.from_provider(100.0, "EUR", session=self.TODAY,
+                                today=self.TODAY)
+        assert not q.settled
+
+    def test_no_session_is_not_settled(self):
+        assert not Quote.from_provider(100.0, "EUR").settled
+
+    def test_a_quote_converts_through_the_rate_service(self, monkeypatch):
+        import fx
+        monkeypatch.setattr(fx, "rate", lambda c, b, on=None: 1.16)
+        q = Quote.from_provider(4208.0, "GBp", session=date(2026, 9, 17),
+                                today=self.TODAY)
+        assert q.converted("EUR", fx) == pytest.approx(42.08 * 1.16)
+
+    def test_a_quote_is_immutable(self):
+        """The unit travels with the price; neither can drift from the other."""
+        q = Quote.from_provider(100.0, "EUR")
+        with pytest.raises(Exception):
+            q.price = 1.0
