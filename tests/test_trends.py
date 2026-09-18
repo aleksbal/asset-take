@@ -136,3 +136,35 @@ class TestDescribe:
         s = series([100 + i for i in range(130)])
         assert trends.describe(list(reversed(s)))["last"] == \
             trends.describe(s)["last"]
+
+
+class TestCalendarWindow:
+    """Six months is whole calendar months, not an averaged day count. Months
+    differ in length, so 365.25/12 puts the boundary on the wrong day and a
+    peak sitting on it falls outside a window labelled six months."""
+
+    def test_six_months_back_lands_on_the_same_day_of_month(self):
+        assert trends._minus_months(date(2026, 9, 18), 6) == date(2026, 3, 18)
+
+    def test_the_averaged_day_count_would_have_missed_it(self):
+        """183 days before 18 September is the 19th of March."""
+        assert trends._minus_months(date(2026, 9, 18), 6) \
+            != date(2026, 9, 18) - timedelta(days=183)
+
+    def test_crossing_a_year_boundary(self):
+        assert trends._minus_months(date(2026, 2, 10), 6) == date(2025, 8, 10)
+
+    def test_a_day_absent_from_the_earlier_month_clamps(self):
+        """The 31st of August less six months is the end of February."""
+        assert trends._minus_months(date(2026, 8, 31), 6) == date(2026, 2, 28)
+
+    def test_a_leap_february_clamps_to_the_29th(self):
+        assert trends._minus_months(date(2024, 8, 31), 6) == date(2024, 2, 29)
+
+    def test_a_peak_on_the_boundary_is_inside_the_window(self):
+        """The case the averaged count excluded."""
+        start, end = date(2026, 3, 18), date(2026, 9, 18)
+        days = (end - start).days
+        s = [(start + timedelta(days=i),
+              200.0 if i == 0 else 100.0) for i in range(days + 1)]
+        assert trends.drawdown(s)["peak"] == 200.0

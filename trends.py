@@ -10,7 +10,8 @@ Nothing here is computed from too little data. A 200-day average of 30 days of
 prices is not a rough 200-day average, it is a different number wearing the
 name, and a reader cannot tell the difference from the output.
 """
-from datetime import date, timedelta
+import calendar
+from datetime import date
 
 RSI_PERIOD = 14
 DRAWDOWN_MONTHS = 6
@@ -41,10 +42,27 @@ def _since(closes, months):
     if not closes:
         return None
     last = _as_date(closes[-1][0])
-    start = last - timedelta(days=round(months * 365.25 / 12))
+    start = _minus_months(last, months)
     if _as_date(closes[0][0]) > start:
         return None
     return [row for row in closes if _as_date(row[0]) >= start]
+
+
+def _minus_months(day, months):
+    """`day` less whole calendar months.
+
+    Not an averaged day count: months differ in length, so six of them from
+    18 September is 18 March, while 183 days is the 19th. A peak on the
+    boundary would fall outside a window labelled six months.
+
+    A day that does not exist in the earlier month clamps to its last - the
+    31st of August less six months is the 28th or 29th of February.
+    """
+    year, month = day.year, day.month - months
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
 
 
 def drawdown(closes, months=DRAWDOWN_MONTHS):
