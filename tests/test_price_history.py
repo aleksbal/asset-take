@@ -83,15 +83,15 @@ class TestRecording:
 
 class TestDailyUpdate:
     def test_seeds_and_records_in_one_pass(self):
-        seeded, recorded = price_history.update(
-            {"SAP.DE": 102.0, "ALV.DE": 300.0},
+        seeded, recorded, rescaled = price_history.update(
+            {"SAP.DE": 102.0, "ALV.DE": 103.0},
             fetch=fetch_ok, on=date(2026, 9, 18))
-        assert (seeded, recorded) == (2, 2)
+        assert (seeded, recorded, rescaled) == (2, 2, 0)
 
     def test_a_position_without_a_price_is_skipped(self):
         """The provider can fail one ticker. That is not a close of zero."""
-        seeded, recorded = price_history.update(
-            {"SAP.DE": None, "ALV.DE": 300.0}, fetch=fetch_ok,
+        seeded, recorded, _ = price_history.update(
+            {"SAP.DE": None, "ALV.DE": 103.0}, fetch=fetch_ok,
             on=date(2026, 9, 18))
         assert recorded == 1
         assert price_history.load("SAP.DE") == {}
@@ -100,8 +100,8 @@ class TestDailyUpdate:
         def fetch_one(ticker):
             return fetch_ok(ticker) if ticker == "ALV.DE" else {}
 
-        seeded, recorded = price_history.update(
-            {"NEW.DE": 10.0, "ALV.DE": 300.0}, fetch=fetch_one,
+        seeded, recorded, _ = price_history.update(
+            {"NEW.DE": 10.0, "ALV.DE": 103.0}, fetch=fetch_one,
             on=date(2026, 9, 18))
         assert seeded == 1 and recorded == 2   # NEW.DE still records today
 
@@ -119,4 +119,46 @@ class TestStoredFormat:
         price_history.backfill("SAP.DE", fetch=fetch_ok)
         p = price_history.path_for("SAP.DE")
         p.write_text(p.read_text() + "2026-09-18,,local\n")
+        assert len(price_history.load("SAP.DE")) == 2
+
+
+class TestCorporateActions:
+    """A split rewrites the provider's history retroactively while ours stays
+    as observed, so closes recorded before it sit on the old scale and closes
+    after it on the new. Provenance cannot repair that - both sides are ours
+    and no ratio is stored - so the series has to be re-seeded."""
+
+    def test_a_split_sized_drop_re_seeds_the_series(self):
+        price_history.record("SAP.DE", 400.0, on=date(2026, 9, 17))
+
+        def post_split(ticker):
+            return {"2026-09-16": 99.0, "2026-09-17": 100.0}
+
+        seeded, recorded, rescaled = price_history.update(
+            {"SAP.DE": 100.0}, fetch=post_split, on=date(2026, 9, 18))
+        assert rescaled == 1
+        series = price_history.load("SAP.DE")
+        assert series["2026-09-17"] == (100.0, price_history.YAHOO)  # rescaled
+
+    def test_an_ordinary_move_does_not_re_seed(self):
+        price_history.backfill("SAP.DE", fetch=fetch_ok)
+
+        def must_not_fetch(ticker):
+            raise AssertionError("an ordinary day must not trigger a re-seed")
+
+        _, _, rescaled = price_history.update(
+            {"SAP.DE": 104.0}, fetch=must_not_fetch, on=date(2026, 9, 18))
+        assert rescaled == 0
+
+    def test_a_re_seed_keeps_what_the_provider_does_not_cover(self):
+        price_history.record("SAP.DE", 400.0, on=date(2026, 9, 17))
+        price_history.record("SAP.DE", 401.0, on=date(2026, 9, 20))
+        price_history.refresh("SAP.DE", fetch=fetch_ok)
+        series = price_history.load("SAP.DE")
+        assert series["2026-09-20"] == (401.0, price_history.LOCAL)
+        assert series["2026-09-17"] == (101.0, price_history.YAHOO)
+
+    def test_a_re_seed_that_fetches_nothing_leaves_the_series_intact(self):
+        price_history.backfill("SAP.DE", fetch=fetch_ok)
+        assert price_history.refresh("SAP.DE", fetch=fetch_none) == 0
         assert len(price_history.load("SAP.DE")) == 2

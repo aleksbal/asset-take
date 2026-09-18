@@ -38,11 +38,13 @@ path.write_text(json.dumps({
 }, indent=2, default=str))
 # Per-listing price series: seed any we hold none for, then extend with
 # today's close. Independent of the snapshot above, which records the account.
-seeded, recorded = price_history.update(
+seeded, recorded, rescaled = price_history.update(
     {p.ticker: p.current_price for p in report.positions})
 
 print(f"{path}  total {report.total_value:,.2f} {base}  "
       f"({report.daily_change_pct:+.2f}%)  [{len(list(out.glob('*.json')))} days]")
 if seeded:
     print(f"price history: seeded {seeded} listing(s) from the provider")
+if rescaled:
+    print(f"price history: re-seeded {rescaled} series after a likely corporate action")
 print(f"price history: {recorded} close(s) recorded in {paths.PRICES}")

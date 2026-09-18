@@ -317,3 +317,44 @@ class TestPinnedRows:
         row = rz.resolve(holding(), existing={"ticker": "GONE.DE", "status": "manual",
                                               "yahoo_price": 9.047, "deviation_pct": 92.9})
         assert row["yahoo_price"] == 9.047
+
+
+class TestMinorUnitQuotes:
+    """London quotes pence, Johannesburg cents. The resolved row is written to
+    positions.csv and valued downstream, where an unrecognised code such as
+    GBp is given an exchange rate of 1.0 - so a 4,208 pence share is valued as
+    4,208 pounds. Normalising at the comparison alone would not have helped:
+    verification passed while the stored row stayed 100x out.
+    """
+
+    def test_pence_becomes_pounds(self):
+        assert rz._as_major(4208.0, "GBp") == (42.08, "GBP")
+
+    def test_pounds_are_left_alone(self):
+        """GBP is the major unit. Scaling it here divided real prices by 100."""
+        assert rz._as_major(42.08, "GBP") == (42.08, "GBP")
+
+    def test_an_unknown_currency_passes_through(self):
+        assert rz._as_major(100.0, "USD") == (100.0, "USD")
+
+    def test_the_live_price_is_normalised_before_anything_sees_it(self,
+                                                                 monkeypatch):
+        class Quote:
+            fast_info = {"last_price": 4208.0, "currency": "GBp"}
+
+        monkeypatch.setattr(rz.yf, "Ticker", lambda t: Quote())
+        assert rz._price("BATS.L") == (42.08, "GBP")
+
+    def test_a_pence_listing_is_stored_in_the_major_unit(self, monkeypatch):
+        """End to end: what lands in the row, not just what was compared."""
+        class Quote:
+            fast_info = {"last_price": 4876.0, "currency": "GBp"}
+
+        monkeypatch.setattr(rz.yf, "Ticker", lambda t: Quote())
+        monkeypatch.setattr(rz, "_candidates", lambda isin, name: ["BATS.L"])
+        monkeypatch.setattr(rz, "_depth", lambda t: 505)
+        monkeypatch.setattr(rz, "_fx", lambda c, b: {"GBP": 1.0}.get(c))
+        row = rz.resolve(holding(isin="GB0002875804", name="BRIT.AMER.TOBACCO",
+                                 currency="GBP", broker_price=48.76))
+        assert row["currency"] == "GBP"
+        assert row["yahoo_price"] == 48.76

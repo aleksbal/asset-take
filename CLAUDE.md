@@ -65,6 +65,20 @@ mismapping is still 93% out and still rejected. A candidate already in the
 holding's currency still wins where one exists, because converting introduces
 a rate we hold no history for.
 
+A price is normalised to its currency's major unit the moment it is read.
+London quotes pence and reports `GBp`; downstream valuation gives an
+unrecognised code a rate of 1.0, so a 4,208 pence share is valued as 4,208
+pounds. Normalising only where prices are compared is not enough - the check
+passes while the stored row stays a hundredfold out. `GBP` is not a minor
+unit and must never be scaled.
+
+A price series can be rescaled underneath us. The provider adjusts its
+history retroactively for splits; ours stays as observed, so closes recorded
+either side of one sit on different scales, and provenance cannot repair it
+because both are ours. A day's move too large to be a price move re-seeds the
+series from the provider, whose adjusted history is the one consistent scale
+available.
+
 Resolution must be stable. Candidates differ by hundredths of a percent and
 live prices move, so choosing afresh each run flips between venues for no
 gain, and every flip restarts that position's price history under a new

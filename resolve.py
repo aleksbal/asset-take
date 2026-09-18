@@ -117,17 +117,31 @@ def fill_display_names(rows):
 
 
 def _price(ticker):
+    """Live price and currency, normalised to the currency's major unit."""
     try:
         fi = yf.Ticker(ticker).fast_info
-        return float(fi["last_price"]), fi["currency"]
+        return _as_major(float(fi["last_price"]), fi["currency"])
     except Exception:
         return None, None
 
 
 # Quoted in a minor unit: the price is in hundredths of the named currency.
-MINOR_UNITS = {"GBP": ("GBP", 0.01), "GBp": ("GBP", 0.01), "ZAc": ("ZAR", 0.01),
-               "ILA": ("ILS", 0.01)}
+# GBP is deliberately absent - it is the major unit, and scaling it here was
+# dividing genuine pound prices by a hundred.
+MINOR_UNITS = {"GBp": ("GBP", 0.01), "ZAc": ("ZAR", 0.01), "ILA": ("ILS", 0.01)}
 _FX_CACHE = {}
+
+
+def _as_major(price, currency):
+    """A pence quote is a price in hundredths of a pound, not a pound price.
+
+    Normalising here rather than at the comparison is the point: the resolved
+    row is written to positions.csv and valued downstream, where an unknown
+    code like GBp gets an exchange rate of 1.0 and a 4,000 pence share is
+    valued as 4,000 pounds.
+    """
+    major, scale = MINOR_UNITS.get(currency, (currency, 1.0))
+    return price * scale, major
 
 
 def _fx(currency, base):
@@ -139,16 +153,10 @@ def _fx(currency, base):
     """
     if currency == base:
         return 1.0
-    scale = 1.0
-    if currency in MINOR_UNITS:
-        currency, scale = MINOR_UNITS[currency]
-        if currency == base:
-            return scale
     key = (currency, base)
     if key not in _FX_CACHE:
         _FX_CACHE[key] = _fx_rate(currency, base)
-    rate = _FX_CACHE[key]
-    return None if rate is None else rate * scale
+    return _FX_CACHE[key]
 
 
 def _fx_rate(currency, base):
