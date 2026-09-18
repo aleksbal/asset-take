@@ -176,8 +176,11 @@ def main():
     latest = snaps[-1]
     rows = positions(latest, by_ticker, names)
     total = latest["total_value"]
-    pnl = sum(r["pnl"] for r in rows if r["pnl"] is not None)
-    cost = sum(r["value"] - r["pnl"] for r in rows if r["pnl"] is not None)
+    priced = [r for r in rows if r["pnl"] is not None]
+    # No position states a cost basis: the gain is unknown, which is not the
+    # same as a gain of zero. sum([]) would quietly claim the latter.
+    pnl = sum(r["pnl"] for r in priced) if priced else None
+    cost = sum(r["value"] - r["pnl"] for r in priced)
     unpriced = [r for r in rows if r.get("unpriced")]
     no_cost = [r for r in rows if r["pnl"] is None and not r.get("unpriced")]
     top5 = sum(r["weight"] for r in rows[:5] if r["weight"] is not None)
@@ -189,9 +192,10 @@ def main():
         day_eur=f'{latest["daily_change"]:+,.0f}'.replace(",", " "),
         day_pct=f'{latest["daily_change_pct"]:+.2f}',
         day_cls="up" if latest["daily_change"] >= 0 else "dn",
-        pnl=f'{pnl:+,.0f}'.replace(",", " "),
-        pnl_pct=f'{pnl/cost*100:+.1f}' if cost else "—",
-        pnl_cls="up" if pnl >= 0 else "dn",
+        pnl=f'{pnl:+,.0f}'.replace(",", " ") if pnl is not None else "—",
+        pnl_sub=(f'{pnl/cost*100:+.1f}% on cost' if pnl is not None and cost
+                 else "no cost basis recorded"),
+        pnl_cls="up" if (pnl or 0) >= 0 else "dn",
         n=len(rows), top5=f"{top5:.0f}",
         caveat=((f'<p class="note"><b>{len(unpriced)} position'
                  f'{"s" if len(unpriced)>1 else ""} could not be priced</b> '
@@ -300,7 +304,7 @@ tbody tr:hover{{background:var(--surface-0)}}
   <div class="tile"><div class="k">Today</div>
     <div class="v {day_cls}">{day_pct}%</div><div class="s">{day_eur} EUR</div></div>
   <div class="tile"><div class="k">Unrealised P&amp;L</div>
-    <div class="v {pnl_cls}">{pnl}</div><div class="s">{pnl_pct}% on cost</div></div>
+    <div class="v {pnl_cls}">{pnl}</div><div class="s">{pnl_sub}</div></div>
 </div>
 
 <div class="cols">

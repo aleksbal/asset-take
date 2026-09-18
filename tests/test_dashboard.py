@@ -107,3 +107,29 @@ class TestUnpricedPositions:
     def test_donut_excludes_unpriced(self):
         rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
         assert dashboard.donut(rows).count('class="seg"') == 1
+
+
+class TestUnknownPortfolioPnl:
+    """An unknown total P&L must not render as a gain of zero. Every position
+    in a file without a cost-basis column lands here, so the headline figure
+    would otherwise read `+0 EUR` for an entire portfolio."""
+
+    def _html(self, by_ticker, tmp_path, monkeypatch):
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "load",
+                            lambda: ([snapshot()], by_ticker, {}))
+        dashboard.main()
+        return (tmp_path / "out.html").read_text(encoding="utf-8")
+
+    def test_reports_unavailable_when_no_position_states_a_cost(
+            self, tmp_path, monkeypatch):
+        html = self._html({}, tmp_path, monkeypatch)
+        assert "no cost basis recorded" in html
+        assert "+0" not in html.split("Unrealised")[1][:200]
+
+    def test_reports_the_figure_when_a_cost_exists(self, tmp_path, monkeypatch):
+        by_ticker = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE",
+                                       quantity=4, currency="EUR", avg_cost=150.0)}
+        html = self._html(by_ticker, tmp_path, monkeypatch)
+        assert "on cost" in html
+        assert "no cost basis recorded" not in html

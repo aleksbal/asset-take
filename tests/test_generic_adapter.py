@@ -175,3 +175,21 @@ class TestFileDiscovery:
             p = tmp_path / f"x{suffix}"
             p.write_text("ticker,quantity\nSAP.DE,18\n")
             assert generic.detect(p), f"{suffix} declared but not detected"
+
+
+class TestRowsWithoutAnIdentifier:
+    """A quantity alone does not make a holding. Exports commonly end in a
+    subtotal line carrying a summed quantity and no instrument; admitting it
+    creates a holding keyed on the empty string, and several such rows
+    overwrite one another downstream."""
+
+    def test_footer_row_is_skipped(self, tmp_path):
+        p = write(tmp_path, "isin,ticker,name,quantity\n"
+                            "IE00B4L5Y983,EUNL.DE,Core World,100\n"
+                            ",,Total,100\n")
+        holdings = generic.parse(p)
+        assert [h.isin for h in holdings] == ["IE00B4L5Y983"]
+
+    def test_no_holding_is_keyed_on_an_empty_identifier(self, tmp_path):
+        p = write(tmp_path, "isin,ticker,quantity\n,,250\nSAP.DE,,18\n")
+        assert all(h.isin for h in generic.parse(p))

@@ -43,6 +43,16 @@ them must handle `None`; `canonical.read()` raised on the empty field until a
 source without cost data existed, which killed the dashboard outright rather
 than omitting P&L.
 
+The same applies to aggregates over those optional fields. `sum([])` is `0`,
+so a portfolio where no position states a cost basis reported `+0 EUR` of
+unrealised P&L - an unknown result dressed as a certainty. Aggregate only over
+the contributing rows and render the summary as unavailable when there are
+none.
+
+A row needs an instrument identifier, not just a quantity. Exports end in a
+subtotal line whose quantity is a sum; admitted, it becomes a holding keyed on
+the empty string, and several of them overwrite one another downstream.
+
 `broker_price` is optional. A source that states no valuation (the generic CSV
 reader) yields `unverified` mappings, which are usable but unchecked. Do not
 make it mandatory again - that assumption was baked in until a second adapter

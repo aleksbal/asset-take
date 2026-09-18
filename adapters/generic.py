@@ -124,6 +124,8 @@ def parse(path):
         if not qty:
             continue
         isin, ticker = cell(row, "isin"), cell(row, "ticker")
+        if not (isin or ticker):
+            continue   # a subtotal or footer row: a quantity naming no instrument
         holdings.append(Holding(
             isin=isin or ticker,
             ticker=ticker or None,   # an explicit ticker beats searching the ISIN
