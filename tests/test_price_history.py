@@ -129,9 +129,10 @@ class TestCorporateActions:
     and no ratio is stored - so the series has to be re-seeded."""
 
     def test_a_split_sized_drop_re_seeds_the_series(self):
+        price_history.backfill("SAP.DE", fetch=lambda t: {"2026-09-16": 396.0})
         price_history.record("SAP.DE", 400.0, on=date(2026, 9, 17))
 
-        def post_split(ticker):
+        def post_split(ticker):     # a 4:1 split: the provider has rescaled
             return {"2026-09-16": 99.0, "2026-09-17": 100.0}
 
         seeded, recorded, rescaled = price_history.update(
@@ -166,6 +167,7 @@ class TestCorporateActions:
     def test_a_three_for_two_split_is_detected(self):
         """Ratio 0.667. A threshold set for halvings misses it entirely and
         leaves the series on two incompatible scales."""
+        price_history.backfill("SAP.DE", fetch=lambda t: {"2026-09-16": 149.0})
         price_history.record("SAP.DE", 150.0, on=date(2026, 9, 17))
 
         def post_split(ticker):
@@ -176,6 +178,7 @@ class TestCorporateActions:
         assert rescaled == 1
 
     def test_a_reverse_three_for_two_is_detected(self):
+        price_history.backfill("SAP.DE", fetch=lambda t: {"2026-09-16": 99.0})
         price_history.record("SAP.DE", 100.0, on=date(2026, 9, 17))
 
         def post_split(ticker):
@@ -346,3 +349,90 @@ class TestUnsettledSession:
             dates={"ALV.DE": "2026-09-17"}, fetch=fetch_none)
         assert recorded == 1
         assert set(price_history.load("ALV.DE")) == {"2026-09-17"}
+
+
+class TestSeedRetry:
+    """A seed can fail transiently while the daily price download succeeds,
+    leaving a one-row local series. Treating any series as seeded would read
+    that as complete and never fetch the history at all."""
+
+    def test_a_local_only_series_is_still_seeded_later(self):
+        price_history.record("SAP.DE", 102.0, on=date(2026, 9, 18))
+        assert price_history.backfill("SAP.DE", fetch=fetch_ok) == 2
+        assert len(price_history.load("SAP.DE")) == 3
+
+    def test_the_recorded_row_survives_the_late_seed(self):
+        price_history.record("SAP.DE", 102.0, on=date(2026, 9, 18))
+        price_history.backfill("SAP.DE", fetch=fetch_ok)
+        assert price_history.load("SAP.DE")["2026-09-18"] == (102.0,
+                                                              price_history.LOCAL)
+
+    def test_a_seeded_series_is_still_left_alone(self):
+        price_history.backfill("SAP.DE", fetch=fetch_ok)
+
+        def must_not_refetch(ticker):
+            raise AssertionError("a seeded series must not be fetched again")
+
+        assert price_history.backfill("SAP.DE", fetch=must_not_refetch) == 0
+
+    def test_a_failed_seed_then_a_record_still_retries(self):
+        seeded, _, _ = price_history.update({"SAP.DE": 102.0},
+                                            dates={"SAP.DE": "2026-09-18"},
+                                            fetch=fetch_none)
+        assert seeded == 0
+        seeded, _, _ = price_history.update({"SAP.DE": 103.0},
+                                            dates={"SAP.DE": "2026-09-19"},
+                                            fetch=fetch_ok)
+        assert seeded == 1
+
+
+class TestSeedExcludesUnsettledBars:
+    """`_fetch` persists every timestamp it is given, so the current-session
+    check has to apply here too - `record()` will not correct it later."""
+
+    @pytest.fixture
+    def with_today(self, monkeypatch):
+        import pandas as pd
+        today = date.today()
+
+        class Handle:
+            fast_info = {"currency": "EUR"}
+
+            def history(self, **kw):
+                idx = pd.to_datetime(["2026-09-15", today.isoformat()])
+                return pd.DataFrame({"Close": [100.0, 999.0]}, index=idx)
+
+        monkeypatch.setattr(price_history.yf, "Ticker", lambda t: Handle())
+        return today
+
+    def test_todays_in_progress_bar_is_not_stored(self, with_today):
+        out = price_history._fetch("SAP.DE")
+        assert with_today.isoformat() not in out
+        assert out == {"2026-09-15": 100.0}
+
+
+class TestRefreshWithoutOverlap:
+    """A refresh happens because the scale is suspect. Rows it cannot put on
+    the provider's scale preserve the discontinuity it exists to remove."""
+
+    def test_unscalable_rows_are_dropped_rather_than_kept_wrong(self):
+        price_history.record("SAP.DE", 200.0, on=date(2024, 1, 2))
+        price_history.record("SAP.DE", 201.0, on=date(2024, 1, 3))
+
+        def no_overlap(ticker):     # a window that does not reach those days
+            return {"2026-09-16": 50.0, "2026-09-17": 51.0}
+
+        price_history.refresh("SAP.DE", fetch=no_overlap)
+        series = price_history.load("SAP.DE")
+        assert "2024-01-02" not in series
+        assert set(series) == {"2026-09-16", "2026-09-17"}
+
+    def test_rows_are_kept_when_a_ratio_can_be_derived(self):
+        price_history.record("SAP.DE", 200.0, on=date(2026, 9, 1))
+        price_history.record("SAP.DE", 400.0, on=date(2026, 9, 16))
+
+        def overlapping(ticker):
+            return {"2026-09-16": 100.0}
+
+        price_history.refresh("SAP.DE", fetch=overlapping)
+        assert price_history.load("SAP.DE")["2026-09-01"][0] == pytest.approx(50.0)

@@ -89,17 +89,25 @@ def _write(ticker, series):
 def backfill(ticker, fetch=None, unit=None):
     """Seed a listing that has no series yet. Returns the rows added.
 
-    A listing we already hold is left alone, so this is safe to call on every
-    run. A listing the provider cannot serve leaves no marker and is simply
+    A listing we already hold provider history for is left alone, so this is
+    safe to call on every run. A listing the provider cannot serve leaves no marker and is simply
     retried next time: a recent IPO has little history today and more later,
     and a permanent flag would keep it empty for good.
     """
-    if load(ticker):
+    series = load(ticker)
+    if any(source == YAHOO for _, source in series.values()):
         return 0
     rows = _fetched(ticker, fetch, unit)
     if not rows:
         return 0
-    _write(ticker, {d: (c, YAHOO) for d, c in rows.items()})
+    # A seed can fail while the daily close succeeds, leaving a one-row local
+    # series. Testing for any series at all would then read that as seeded and
+    # never retry, so the test is for provider rows - and what we recorded
+    # ourselves is kept rather than thrown away by the eventual seed.
+    merged = {day: (close, YAHOO) for day, close in rows.items()}
+    for day, entry in series.items():
+        merged.setdefault(day, entry)
+    _write(ticker, merged)
     return len(rows)
 
 
@@ -151,10 +159,17 @@ def _fetch(ticker, unit=None):
         # Nothing is stored and no marker is left, so this simply retries.
         return {}
     out = {}
+    today = date.today()
     for ts, close in hist["Close"].items():
-        if close == close:          # NaN closes are gaps, not prices
-            out[ts.date().isoformat()] = quotes.as_major(float(close),
-                                                         currency)[0]
+        if close != close:          # NaN closes are gaps, not prices
+            continue
+        day = ts.date()
+        if day >= today:
+            # Today's bar may still be in progress, and record() will not
+            # overwrite a date, so storing it now fixes an intraday value as
+            # that session's close. The same rule the daily path applies.
+            continue
+        out[day.isoformat()] = quotes.as_major(float(close), currency)[0]
     return out
 
 
@@ -199,16 +214,23 @@ def refresh(ticker, fetch=None, unit=None):
     # would delete every older row on each refresh. They predate the rescaling
     # though, so where a day overlaps we can read the ratio off it and put
     # them on the provider's scale.
-    scale = 1.0
+    scale = None
     for day in sorted(rows):
         if day in series and series[day][0]:
             scale = rows[day] / series[day][0]
             break
+
     for day, (close, source) in series.items():
         if day > latest:
             merged[day] = (close, source)
-        elif day < earliest:
+        elif day < earliest and scale is not None:
             merged[day] = (close * scale, source)
+        elif day < earliest:
+            # No overlapping day, so no ratio to read. A refresh happens
+            # because the scale is suspect; keeping these unscaled would
+            # preserve the very discontinuity it exists to remove, and there
+            # is nothing to correct them with. They are dropped.
+            continue
 
     _write(ticker, merged)
     return len(rows)
