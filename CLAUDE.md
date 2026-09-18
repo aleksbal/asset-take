@@ -65,20 +65,28 @@ mismapping is still 93% out and still rejected. A candidate already in the
 holding's currency still wins where one exists, because converting introduces
 a rate we hold no history for.
 
-A price is normalised to its currency's major unit by every layer that reads
-one from the provider, via `quotes.as_major`. Three paths fetch prices
-independently and each must convert:
+A provider price enters through `Quote.from_provider`, which normalises to the
+major unit and records whether the session has closed. It returns None for an
+unknown unit rather than a quote in an assumed one.
+
+Three paths read prices and each builds a Quote:
 
 - `resolve._price()` - `fast_info`, for verifying a candidate
 - `portfolio_monitor.fetch_prices()` - `yf.download`, for the daily valuation
 - `price_history._fetch()` - `Ticker.history`, for seeding a series
 
-This cost three rounds of review to get right, one path at a time, because
-each fix looked complete on its own. Normalising in one leaves the others a
-hundredfold out while the row they wrote looks correct, and in the series the
-mismatch compounds: a pence-scaled seed beside a pound-scaled daily close
-reads as a corporate action and re-seeds back to the raw values every run.
-Before adding a fourth reader, convert at the boundary.
+Six review rounds found the same defect in six places before this type
+existed: a price reaching storage or valuation with its unit left behind,
+where 4,208 pence is a valid number that happens to be a hundred times the
+truth. Each fix was correct and each looked complete. A fourth reader must
+construct a Quote too - not because a convention says so, but because there
+is then nothing left to forget.
+
+Exchange rates come from `fx.rate`, current or on a given date, and it
+returns None where a pair cannot be priced. Never 1.0: that values a foreign
+holding as though it were domestic, wrong by whatever the rate happens to be,
+and indistinguishable from a correct figure. A position whose rate is missing
+is left unvalued, which the dashboard reports.
 
 The unit itself is recorded at resolution, in `quote_currency` on the map and
 on `positions.csv`, and is deliberately not upper-cased - `GBp` and `GBP` are
