@@ -54,28 +54,38 @@ class TestRsi:
 
 class TestDrawdown:
     def test_reports_the_fall_from_a_peak(self):
-        s = series([100 + i for i in range(100)] + [200 - i for i in range(30)])
+        s = series([100 + i for i in range(170)] + [270 - i for i in range(30)])
         d = trends.drawdown(s)
-        assert d["peak"] == pytest.approx(200.0)
-        assert d["pct"] == pytest.approx((171.0 / 200.0 - 1) * 100)
+        assert d["peak"] == pytest.approx(270.0)
+        assert d["pct"] == pytest.approx((241.0 / 270.0 - 1) * 100)
 
     def test_dates_the_peak_and_counts_the_days_since(self):
         """The plateau case: a price that stopped rising some time ago. How
         long ago is the part a table of current values cannot show."""
-        s = series([100 + i for i in range(90)] + [189.0] * 40)
+        s = series([100 + i for i in range(160)] + [259.0] * 40)
         d = trends.drawdown(s)
-        assert d["peak_on"] == date(2026, 1, 1) + timedelta(days=89)
+        assert d["peak_on"] == date(2026, 1, 1) + timedelta(days=159)
         assert d["days_since_peak"] == 40
 
     def test_a_series_at_its_peak_shows_no_drawdown(self):
-        assert trends.drawdown(series([100 + i for i in range(130)]))["pct"] == 0
+        assert trends.drawdown(series([100 + i for i in range(200)]))["pct"] == 0
 
     def test_too_short_a_series_has_no_drawdown(self):
         assert trends.drawdown(flat(20)) is None
 
+    def test_a_series_not_reaching_back_six_months_has_no_drawdown(self):
+        """Otherwise it is the high of whatever we happen to hold, reported
+        under a label that says six months."""
+        assert trends.drawdown(flat(150)) is None
+
+    def test_only_the_window_is_searched_for_the_peak(self):
+        """An older, higher price is outside the six months being described."""
+        s = series([500.0] + [100.0 + i for i in range(220)])
+        assert trends.drawdown(s)["peak"] < 500.0
+
     def test_a_worthless_series_is_not_a_drawdown(self):
         """Dividing by a peak of zero is not a 100% fall, it is no answer."""
-        assert trends.drawdown(flat(130, 0.0)) is None
+        assert trends.drawdown(flat(200, 0.0)) is None
 
 
 class TestMovingAverage:
@@ -93,10 +103,13 @@ class TestMovingAverage:
         assert trends.moving_average(flat(30), 200) is None
         assert trends.relative_to_average(flat(30), 200) is None
 
-    def test_a_window_within_tolerance_is_allowed(self):
-        """Venue holidays mean a series need not be gapless, so a little
-        slack is allowed - documented, and nothing like 30 for 200."""
-        assert trends.moving_average(flat(170), 200) is not None
+    def test_a_session_window_has_no_tolerance(self):
+        """Non-trading days are already absent from a price series, so
+        holidays are no argument for shortening a session count. 170 closes
+        averaged under a 200-session label is a different number, and the
+        output cannot be told apart from the real one."""
+        assert trends.moving_average(flat(199), 200) is None
+        assert trends.moving_average(flat(200), 200) is not None
 
 
 class TestDescribe:

@@ -12,28 +12,49 @@ name, and a reader cannot tell the difference from the output.
 """
 from datetime import date, timedelta
 
-TRADING_DAYS_PER_MONTH = 21
 RSI_PERIOD = 14
-# A window is only reported when the series covers it. Some slack, because a
-# venue's holidays are not the calendar's and a series need not be gapless.
-COVERAGE = 0.8
+DRAWDOWN_MONTHS = 6
 
 
 def _window(closes, days):
-    """The last `days` sessions, or None if the series does not cover them."""
-    if len(closes) < days * COVERAGE:
+    """The last `days` sessions, or None if the series does not hold them.
+
+    Exactly `days`, with no tolerance. Non-trading days are already absent
+    from a price series, so a venue's holidays are no argument for reducing a
+    session count - and averaging 170 closes under a 200-session label gives
+    a materially different number that the output cannot be distinguished
+    from the real one.
+    """
+    if len(closes) < days:
         return None
     return closes[-days:]
 
 
-def drawdown(closes, months=6):
+def _since(closes, months):
+    """The closes within the last `months`, or None if the series is shorter.
+
+    A calendar window, because "its six-month high" is a claim about time
+    rather than about sessions. It is only reported when the series actually
+    reaches back that far; otherwise it would be the high of whatever we
+    happen to hold, under a label saying six months.
+    """
+    if not closes:
+        return None
+    last = _as_date(closes[-1][0])
+    start = last - timedelta(days=round(months * 365.25 / 12))
+    if _as_date(closes[0][0]) > start:
+        return None
+    return [row for row in closes if _as_date(row[0]) >= start]
+
+
+def drawdown(closes, months=DRAWDOWN_MONTHS):
     """How far below its peak the last price sits, and when that peak was.
 
     The plateau case this exists for: a price that stopped rising some time
     ago and has been drifting since. A table of current values cannot show
     that, because nothing in today's number remembers the peak.
     """
-    window = _window(closes, months * TRADING_DAYS_PER_MONTH)
+    window = _since(closes, months)
     if not window:
         return None
     peak = max(close for _, close in window)

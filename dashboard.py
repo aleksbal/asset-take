@@ -173,7 +173,7 @@ def _peak_cell(t):
     """
     d = (t or {}).get("drawdown")
     if not d:
-        return '<td class="n sub">—</td>'
+        return '<td class="n none">—</td>'
     days = d["days_since_peak"]
     return (f'<td class="n {"dn" if d["pct"] < -5 else ""}">{d["pct"]:+.1f}%'
             f'<span class="sub">{days}d ago</span></td>')
@@ -182,14 +182,14 @@ def _peak_cell(t):
 def _ma_cell(t):
     v = (t or {}).get("vs_ma200")
     if v is None:
-        return '<td class="n sub">—</td>'
+        return '<td class="n none">—</td>'
     return f'<td class="n {"up" if v >= 0 else "dn"}">{v:+.1f}%</td>'
 
 
 def _rsi_cell(t):
     v = (t or {}).get("rsi")
     if v is None:
-        return '<td class="n sub">—</td>'
+        return '<td class="n none">—</td>'
     return f'<td class="n">{v:.0f}</td>'
 
 
@@ -339,6 +339,7 @@ tbody tr:hover{{background:var(--surface-0)}}
 .n{{text-align:right}}
 .nm{{font-weight:500;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}} .tk{{display:block;font-size:11px;color:var(--text-muted);font-weight:400}}
 .sub{{display:block;font-size:11px;color:var(--text-muted);font-weight:400}}
+.none{{color:var(--text-muted)}}
 th[title]{{cursor:help}}
 .w{{position:relative}}
 .bar{{position:absolute;left:10px;right:10px;bottom:3px;height:2px;background:var(--line);

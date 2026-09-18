@@ -198,8 +198,12 @@ It does not say what to do, and nothing should be added that does: by price
 alone, a stock that has stopped growing is indistinguishable from one that is
 resting, and the evidence that acting on these beats holding is contested.
 
-No metric is computed from too little data. A 200-day average of 30 prices is
-not a rough 200-day average, it is a different number wearing the name, and
-the output looks identical either way. Where a series cannot support a
+No metric is computed from too little data, and a window is never shortened
+to fit. A 200-session average needs 200 sessions: non-trading days are
+already absent from a price series, so holidays are no argument for
+tolerance, and 170 closes averaged under a 200-session label is a different
+number the output cannot be told apart from. A drawdown window is calendar
+time, because "its six-month high" is a claim about time rather than
+sessions, and it is reported only when the series reaches back that far. Where a series cannot support a
 metric, the value is None and the dashboard shows an em dash - absent and
 neutral are different claims.
