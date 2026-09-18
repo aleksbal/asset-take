@@ -193,3 +193,19 @@ class TestRowsWithoutAnIdentifier:
     def test_no_holding_is_keyed_on_an_empty_identifier(self, tmp_path):
         p = write(tmp_path, "isin,ticker,quantity\n,,250\nSAP.DE,,18\n")
         assert all(h.isin for h in generic.parse(p))
+
+
+class TestHeaderSpacing:
+    """A human-written header spells a column with spaces. If the alias only
+    lists the underscored form the import still succeeds, silently dropping
+    the column - which for `avg_cost` means losing P&L for every row."""
+
+    @pytest.mark.parametrize("header", ["Average Cost", "average_cost",
+                                        "Average-Cost", "AVERAGE  COST"])
+    def test_cost_column_is_found_however_it_is_spaced(self, tmp_path, header):
+        p = write(tmp_path, f"ticker,quantity,{header}\nSAP.DE,10,150.0\n")
+        assert generic.parse(p)[0].avg_cost == 150.0
+
+    def test_spacing_does_not_invent_a_column(self, tmp_path):
+        p = write(tmp_path, "ticker,quantity,note\nSAP.DE,10,hello\n")
+        assert generic.parse(p)[0].avg_cost is None

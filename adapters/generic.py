@@ -27,8 +27,14 @@ ALIASES = {
 }
 
 
+_SPACE = re.compile(r"[\s_-]+")
+
+
 def _norm(name):
-    return (name or "").strip().lower().lstrip("﻿")
+    """Fold a header to alias form. Exports write the same column as
+    `Average Cost`, `average_cost` or `Average-Cost`; leaving the spaces in
+    means the alias misses and the cost is silently read as absent."""
+    return _SPACE.sub("_", (name or "").strip().lstrip("﻿").lower()).strip("_")
 
 
 def _map_columns(fieldnames):

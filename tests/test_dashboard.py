@@ -133,3 +133,42 @@ class TestUnknownPortfolioPnl:
         html = self._html(by_ticker, tmp_path, monkeypatch)
         assert "on cost" in html
         assert "no cost basis recorded" not in html
+
+
+class TestForeignCurrencyCostBasis:
+    """`avg_cost` is stated in the holding's currency. The value is converted
+    to the base currency, so the cost must be too - otherwise the exchange
+    rate itself is reported as a gain or loss."""
+
+    def usd_snapshot(self):
+        return snapshot(
+            total_value=90.0, fx_rates={"EUR": 1.0, "USD": 0.9},
+            positions=[{"ticker": "AAPL", "quantity": 1, "current_price": 100.0,
+                        "previous_close": 100.0, "currency": "USD"}])
+
+    def test_flat_position_shows_no_gain_or_loss(self):
+        by_ticker = {"AAPL": Holding(isin="US0378331005", name="Apple", quantity=1,
+                                     currency="USD", avg_cost=100.0)}
+        row = dashboard.positions(self.usd_snapshot(), by_ticker, {})[0]
+        assert row["pnl"] == 0
+        assert abs(row["pnl_pct"]) < 1e-9
+
+    def test_real_gain_survives_the_conversion(self):
+        by_ticker = {"AAPL": Holding(isin="US0378331005", name="Apple", quantity=1,
+                                     currency="USD", avg_cost=50.0)}
+        row = dashboard.positions(self.usd_snapshot(), by_ticker, {})[0]
+        assert row["pnl"] == 45.0          # a 50 USD gain, converted at 0.9
+        assert round(row["pnl_pct"]) == 100
+
+
+class TestMissingCostNote:
+    """The note must name the actual reason. It described a currency mismatch
+    the code no longer performs, sending the reader after the wrong fix."""
+
+    def test_note_reports_an_absent_cost_basis(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "load", lambda: ([snapshot()], {}, {}))
+        dashboard.main()
+        html = (tmp_path / "out.html").read_text(encoding="utf-8")
+        assert "no cost basis" in html
+        assert "another currency" not in html

@@ -57,7 +57,11 @@ def positions(snap, by_ticker, names):
             continue
         value = p["quantity"] * p["current_price"] * fx
         prev = p["quantity"] * (p.get("previous_close") or p["current_price"]) * fx
-        cost = (h.quantity * h.avg_cost) if (h and h.avg_cost) else None
+        # avg_cost is denominated in the holding's own currency, so it needs
+        # the same conversion the value got. Subtracting an unconverted USD
+        # cost from a EUR value reports the exchange rate as a loss.
+        cost_fx = snap["fx_rates"].get(h.currency, fx) if h else fx
+        cost = (h.quantity * h.avg_cost * cost_fx) if (h and h.avg_cost) else None
         rows.append({
             "name": names.get(p["ticker"]) or (h.name if h else p["ticker"]),
             "ticker": p["ticker"], "qty": p["quantity"], "price": p["current_price"],
@@ -202,8 +206,9 @@ def main():
                  f'({", ".join(r["ticker"] for r in unpriced)}) and {"are" if len(unpriced)>1 else "is"} '
                  f'excluded from the total, which is therefore understated.</p>')
                 if unpriced else "") + (f'<p class="note">{len(no_cost)} position'
-                f'{"s" if len(no_cost)>1 else ""} priced in another currency than '
-                f'the cost basis ({", ".join(r["ticker"] for r in no_cost)}), so '
+                f'{"s" if len(no_cost)>1 else ""} state'
+                f'{"" if len(no_cost)>1 else "s"} no cost basis '
+                f'({", ".join(r["ticker"] for r in no_cost)}), so '
                 f'P&amp;L excludes {"them" if len(no_cost)>1 else "it"}.</p>')
                if no_cost else "",
         chart=line_chart(snaps),

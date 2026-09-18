@@ -49,6 +49,13 @@ unrealised P&L - an unknown result dressed as a certainty. Aggregate only over
 the contributing rows and render the summary as unavailable when there are
 none.
 
+`avg_cost` is denominated in the holding's own currency. The dashboard
+converts a position's value to the base currency, so it must convert the cost
+basis with it - subtracting an unconverted USD cost from a EUR value reports
+the exchange rate itself as a gain or loss. Both sides use the same rate, so
+what is shown is the local P&L expressed in the base currency; we hold no
+historical FX for the purchase date and do not pretend to.
+
 A row needs an instrument identifier, not just a quantity. Exports end in a
 subtotal line whose quantity is a sum; admitted, it becomes a holding keyed on
 the empty string, and several of them overwrite one another downstream.
