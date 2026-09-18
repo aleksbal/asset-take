@@ -31,3 +31,22 @@ def test_empty_is_none(text):
 def test_quantity_is_not_inflated_by_a_decimal_point():
     """The specific failure: 30.0 shares must never become 300."""
     assert parse_number("30.0") < 31
+
+
+@pytest.mark.parametrize("text,sep,expected", [
+    ("1,234", ".", 1234.0),      # English thousands — the 1000x bug
+    ("1,234.56", ".", 1234.56),
+    ("1.234", ",", 1234.0),      # German thousands
+    ("1.234,56", ",", 1234.56),
+    ("245,8172", ",", 245.8172),
+    ("30.0", ".", 30.0),
+])
+def test_an_explicit_separator_overrides_the_heuristic(text, sep, expected):
+    assert parse_number(text, decimal_sep=sep) == pytest.approx(expected)
+
+
+def test_the_heuristic_alone_cannot_resolve_a_lone_comma():
+    """Why callers that know their locale must say so: '1,234' is genuinely
+    ambiguous, and the heuristic reads it as a decimal."""
+    assert parse_number("1,234") == pytest.approx(1.234)
+    assert parse_number("1,234", decimal_sep=".") == pytest.approx(1234.0)

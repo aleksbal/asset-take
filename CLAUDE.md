@@ -26,6 +26,45 @@ export by content (never filename), emit `Holding` objects from `canonical.py`,
 and `resolve.py` maps ISIN to a Yahoo ticker. Adding a broker means one new
 adapter with `detect()` and `parse()`; nothing else changes.
 
+Number parsing is locale-ambiguous by nature: `1,234` is 1234 in English and
+1.234 in German. The file delimiter does NOT settle it - CSV quoting permits a
+comma inside a comma-delimited field - so do not infer locale from it. The
+generic adapter infers one locale from all of the file's numbers together and
+applies it uniformly; where there is no evidence it declines to guess rather
+than inventing a default.
+
+A snapshot position may carry no price - the provider can fail for one ticker
+while succeeding for the rest. Never value such a position at zero: it
+understates the total while looking complete. Exclude it and say so.
+
+`avg_cost` and `broker_price` are both optional on `Holding`, and blank means
+absent, never zero - a zero cost basis reads as a 100% gain. Anything consuming
+them must handle `None`; `canonical.read()` raised on the empty field until a
+source without cost data existed, which killed the dashboard outright rather
+than omitting P&L.
+
+The same applies to aggregates over those optional fields. `sum([])` is `0`,
+so a portfolio where no position states a cost basis reported `+0 EUR` of
+unrealised P&L - an unknown result dressed as a certainty. Aggregate only over
+the contributing rows and render the summary as unavailable when there are
+none.
+
+`avg_cost` is denominated in the holding's own currency. The dashboard
+converts a position's value to the base currency, so it must convert the cost
+basis with it - subtracting an unconverted USD cost from a EUR value reports
+the exchange rate itself as a gain or loss. Both sides use the same rate, so
+what is shown is the local P&L expressed in the base currency; we hold no
+historical FX for the purchase date and do not pretend to.
+
+A row needs an instrument identifier, not just a quantity. Exports end in a
+subtotal line whose quantity is a sum; admitted, it becomes a holding keyed on
+the empty string, and several of them overwrite one another downstream.
+
+`broker_price` is optional. A source that states no valuation (the generic CSV
+reader) yields `unverified` mappings, which are usable but unchecked. Do not
+make it mandatory again - that assumption was baked in until a second adapter
+exposed it, and silently resolved every such holding to nothing.
+
 Verification is the point of `broker_price`: the export carries the broker's
 own valuation, so a wrong ticker is caught automatically. This already caught
 a small-cap ETF being matched to its large-cap namesake. Never accept a

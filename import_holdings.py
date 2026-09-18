@@ -35,10 +35,14 @@ def _de(x):
 def pick_file(arg):
     p = Path(arg).expanduser() if arg else paths.IMPORTS
     if p.is_dir():
-        csvs = sorted(p.glob("*.csv"), key=lambda f: f.stat().st_mtime, reverse=True)
-        if not csvs:
-            sys.exit(f"no CSV files in {p}")
-        return csvs[0]
+        # Must match what adapters accept, or a supported export is reported absent.
+        found = sorted((f for f in p.iterdir()
+                        if f.suffix.lower() in adapters.generic.SUFFIXES),
+                       key=lambda f: f.stat().st_mtime, reverse=True)
+        if not found:
+            exts = ", ".join(adapters.generic.SUFFIXES)
+            sys.exit(f"no {exts} files in {p}")
+        return found[0]
     if not p.exists():
         sys.exit(f"not found: {p}")
     return p
@@ -64,7 +68,7 @@ def main():
     for h in holdings:
         row = rz.resolve(h, cached.get(h.isin))
         rows[h.isin] = row
-        if row["ticker"] and row["status"] in ("ok", "manual"):
+        if row["ticker"] and row["status"] in ("ok", "manual", "unverified"):
             resolved.append((h, row["ticker"]))
         print(f"  {h.isin}  {h.name[:26]:<26} -> {row['ticker'] or '—':<10} "
               f"{row['status']:<10} {str(row['deviation_pct']) + '%' if row['deviation_pct'] != '' else ''}")
@@ -83,8 +87,15 @@ def main():
             cost = h.avg_cost if cur == h.currency else ""
             w.writerow([ticker, _de(h.quantity), cur, _de(cost)])
 
-    bad = [r for r in rows.values() if r["status"] not in ("ok", "manual")]
+    bad = [r for r in rows.values() if r["status"] not in ("ok", "manual", "unverified")]
+    unverified = [r for r in rows.values() if r["status"] == "unverified"]
     print(f"\nholdings.csv: {len(holdings)}   positions.csv: {len(resolved)} priceable")
+    if unverified:
+        print(f"{len(unverified)} unverified — this source states no valuation, so the "
+              f"ticker could not be checked against it. Confirm they are the right "
+              f"instruments:")
+        for r in unverified:
+            print(f"  {r['isin']:<14} {r['name'][:30]:<30} -> {r['ticker']}")
     if bad:
         print(f"{len(bad)} need attention — fix the ticker in isin_map.csv and set status=manual:")
         for r in bad:
