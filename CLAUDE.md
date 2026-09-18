@@ -26,6 +26,12 @@ export by content (never filename), emit `Holding` objects from `canonical.py`,
 and `resolve.py` maps ISIN to a Yahoo ticker. Adding a broker means one new
 adapter with `detect()` and `parse()`; nothing else changes.
 
+`avg_cost` and `broker_price` are both optional on `Holding`, and blank means
+absent, never zero - a zero cost basis reads as a 100% gain. Anything consuming
+them must handle `None`; `canonical.read()` raised on the empty field until a
+source without cost data existed, which killed the dashboard outright rather
+than omitting P&L.
+
 `broker_price` is optional. A source that states no valuation (the generic CSV
 reader) yields `unverified` mappings, which are usable but unchecked. Do not
 make it mandatory again - that assumption was baked in until a second adapter
