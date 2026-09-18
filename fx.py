@@ -10,6 +10,7 @@ Historical rates are available for the same window as prices, so a conversion
 can be done at the rate that applied on a given day rather than today's. What
 we lack for a cost basis is the purchase date, not the rate.
 """
+import math
 from datetime import date
 
 import pandas as pd
@@ -46,14 +47,30 @@ def _spot(currency, base):
     return _SPOT[key]
 
 
+def _usable(value):
+    """A rate has to be a positive finite number.
+
+    NaN is truthy, so a plain truth test accepts it and caches it, and every
+    position in that currency - and the portfolio total with them - becomes
+    NaN. Zero and negatives are not rates either, and inverting them is worse
+    than having nothing.
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(value) and value > 0
+
+
 def _fetch_spot(currency, base):
     for pair, invert in _pairs(currency, base):
         try:
-            px = float(yf.Ticker(pair).fast_info["last_price"])
-            if px:
-                return 1.0 / px if invert else px
+            px = yf.Ticker(pair).fast_info["last_price"]
         except Exception:
             continue
+        if _usable(px):
+            px = float(px)
+            return 1.0 / px if invert else px
     return None
 
 
@@ -70,7 +87,7 @@ def _historical(currency, base, on):
         # like an answer; the caller needs to know we do not have one.
         return None
     value = series.asof(want)
-    return None if pd.isna(value) else float(value)
+    return float(value) if _usable(value) else None
 
 
 def _fetch_series(currency, base):
@@ -81,7 +98,7 @@ def _fetch_series(currency, base):
             continue
         if hist is None or hist.empty or "Close" not in hist:
             continue
-        closes = hist["Close"].dropna()
+        closes = hist["Close"][hist["Close"].apply(_usable)]
         if closes.empty:
             continue
         closes.index = closes.index.tz_localize(None)

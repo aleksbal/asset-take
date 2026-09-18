@@ -98,3 +98,44 @@ class TestConvert:
     def test_an_unavailable_rate_gives_no_amount(self, monkeypatch):
         monkeypatch.setattr(fx.yf, "Ticker", Pair("NOPE=X", 1.0))
         assert fx.convert(100.0, "XXX", "EUR") is None
+
+
+class TestUnusableRates:
+    """NaN is truthy. A plain truth test accepts it, caches it, and every
+    position in that currency - and the portfolio total with them - becomes
+    NaN. Zero and negatives are not rates either, and inverting them is worse
+    than having nothing."""
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 0.0, -1.5,
+                                     None, "x"])
+    def test_an_unusable_spot_price_is_rejected(self, monkeypatch, bad):
+        monkeypatch.setattr(fx.yf, "Ticker", Pair("USDEUR=X", bad))
+        assert fx.rate("USD", "EUR") is None
+
+    def test_the_reverse_pair_is_tried_when_the_first_is_unusable(self,
+                                                                 monkeypatch):
+        """A NaN on the direct pair must not stop the fallback, which is what
+        caching it did."""
+        class EitherWay:
+            def __call__(self, symbol):
+                self.symbol = symbol
+                return self
+
+            @property
+            def fast_info(self):
+                return {"last_price": float("nan") if self.symbol == "USDEUR=X"
+                        else 1.25}
+
+        monkeypatch.setattr(fx.yf, "Ticker", EitherWay())
+        assert fx.rate("USD", "EUR") == pytest.approx(0.8)
+
+    def test_an_unusable_historical_close_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(fx.yf, "Ticker", Pair(
+            "USDEUR=X", 0.87, closes={"2026-09-16": float("nan")}))
+        assert fx.rate("USD", "EUR", on=date(2026, 9, 16)) is None
+
+    def test_a_usable_close_beside_an_unusable_one_is_kept(self, monkeypatch):
+        monkeypatch.setattr(fx.yf, "Ticker", Pair(
+            "USDEUR=X", 0.87,
+            closes={"2026-09-14": 0.90, "2026-09-16": float("nan")}))
+        assert fx.rate("USD", "EUR", on=date(2026, 9, 16)) == pytest.approx(0.90)
