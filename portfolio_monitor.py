@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional
 
+import quotes
+
 try:
     import yfinance as yf
 except ImportError:
@@ -187,6 +189,14 @@ def fetch_fx_rates(currencies: set[str], base_currency: str) -> dict[str, float]
     return fx_rates
 
 
+def _quote_currency(ticker: str) -> Optional[str]:
+    """The unit a venue quotes in, which is not always the currency it names."""
+    try:
+        return yf.Ticker(ticker).fast_info["currency"]
+    except Exception:
+        return None
+
+
 def fetch_prices(positions: list[Position]) -> list[Position]:
     """Fetch current prices and previous close for all positions."""
     tickers = [p.ticker for p in positions]
@@ -214,6 +224,15 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                 elif len(closes) == 1:
                     pos.current_price = float(closes.iloc[-1])
                     pos.previous_close = pos.current_price
+
+                # A download returns the venue's own quote unit. London sends
+                # pence; valuing that with the pound's rate overstates the
+                # position a hundredfold.
+                quote_currency = _quote_currency(pos.ticker)
+                pos.current_price, _ = quotes.as_major(pos.current_price,
+                                                       quote_currency)
+                pos.previous_close, _ = quotes.as_major(pos.previous_close,
+                                                        quote_currency)
 
             # Get company name
             try:

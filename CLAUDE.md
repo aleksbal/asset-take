@@ -65,6 +65,13 @@ mismapping is still 93% out and still rejected. A candidate already in the
 holding's currency still wins where one exists, because converting introduces
 a rate we hold no history for.
 
+A price is normalised to its currency's major unit by every layer that reads
+one from the provider, via `quotes.as_major`. Resolution and valuation each
+fetch their own prices - `fetch_prices()` downloads closes directly and never
+passes through resolution - so normalising in one of them leaves the other a
+hundredfold out while the stored row looks correct. That is why the table
+lives in its own module and not beside either caller.
+
 A price is normalised to its currency's major unit the moment it is read.
 London quotes pence and reports `GBp`; downstream valuation gives an
 unrecognised code a rate of 1.0, so a 4,208 pence share is valued as 4,208

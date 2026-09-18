@@ -26,7 +26,13 @@ BACKFILL_PERIOD = "2y"
 # scale of the series may have changed under us, and the only cheap one we
 # have: checking every listing for corporate actions every day would double
 # the daily fetch for an event that happens to a holding once in years.
-SPLIT_SUSPICION = 0.35
+#
+# Set low enough for a 3-for-2, whose ratio is 0.667, and its reverse at 1.5.
+# Erring low costs one redundant fetch on a violent day and nothing else - a
+# re-seed replaces our rows with the provider's, which are authoritative
+# whether or not anything was rescaled. Erring high leaves a series silently
+# broken, so the asymmetry decides the threshold.
+SPLIT_SUSPICION = 0.20
 
 
 def path_for(ticker):
@@ -150,11 +156,26 @@ def refresh(ticker, fetch=None):
     rows = (fetch or _fetch)(ticker)
     if not rows:
         return 0
-    latest = max(rows)
+
+    earliest, latest = min(rows), max(rows)
     merged = {day: (close, YAHOO) for day, close in rows.items()}
-    for day, entry in series.items():
+
+    # Rows the provider's window does not reach are kept, not dropped: once a
+    # series outlives BACKFILL_PERIOD, filtering to the fetched range alone
+    # would delete every older row on each refresh. They predate the rescaling
+    # though, so where a day overlaps we can read the ratio off it and put
+    # them on the provider's scale.
+    scale = 1.0
+    for day in sorted(rows):
+        if day in series and series[day][0]:
+            scale = rows[day] / series[day][0]
+            break
+    for day, (close, source) in series.items():
         if day > latest:
-            merged[day] = entry
+            merged[day] = (close, source)
+        elif day < earliest:
+            merged[day] = (close * scale, source)
+
     _write(ticker, merged)
     return len(rows)
 

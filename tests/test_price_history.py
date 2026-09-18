@@ -162,3 +162,64 @@ class TestCorporateActions:
         price_history.backfill("SAP.DE", fetch=fetch_ok)
         assert price_history.refresh("SAP.DE", fetch=fetch_none) == 0
         assert len(price_history.load("SAP.DE")) == 2
+
+    def test_a_three_for_two_split_is_detected(self):
+        """Ratio 0.667. A threshold set for halvings misses it entirely and
+        leaves the series on two incompatible scales."""
+        price_history.record("SAP.DE", 150.0, on=date(2026, 9, 17))
+
+        def post_split(ticker):
+            return {"2026-09-17": 100.0}
+
+        _, _, rescaled = price_history.update(
+            {"SAP.DE": 100.0}, fetch=post_split, on=date(2026, 9, 18))
+        assert rescaled == 1
+
+    def test_a_reverse_three_for_two_is_detected(self):
+        price_history.record("SAP.DE", 100.0, on=date(2026, 9, 17))
+
+        def post_split(ticker):
+            return {"2026-09-17": 150.0}
+
+        _, _, rescaled = price_history.update(
+            {"SAP.DE": 150.0}, fetch=post_split, on=date(2026, 9, 18))
+        assert rescaled == 1
+
+
+class TestRefreshWindow:
+    """The provider serves a fixed window. Once a series outlives it, a
+    refresh that keeps only the fetched range deletes every older row - and
+    does so again on every subsequent refresh."""
+
+    def test_rows_older_than_the_window_survive(self):
+        for day, close in [(1, 50.0), (2, 51.0), (16, 400.0), (17, 404.0)]:
+            price_history.record("SAP.DE", close, on=date(2026, 9, day))
+
+        def window(ticker):          # provider covers the 16th onward only
+            return {"2026-09-16": 100.0, "2026-09-17": 101.0}
+
+        price_history.refresh("SAP.DE", fetch=window)
+        series = price_history.load("SAP.DE")
+        assert "2026-09-01" in series and "2026-09-02" in series
+
+    def test_older_rows_are_put_on_the_providers_scale(self):
+        """They predate the rescaling. The overlapping day gives the ratio."""
+        price_history.record("SAP.DE", 200.0, on=date(2026, 9, 1))
+        price_history.record("SAP.DE", 400.0, on=date(2026, 9, 16))
+
+        def window(ticker):          # a 4:1 split: 400 became 100
+            return {"2026-09-16": 100.0}
+
+        price_history.refresh("SAP.DE", fetch=window)
+        assert price_history.load("SAP.DE")["2026-09-01"][0] == pytest.approx(50.0)
+
+    def test_repeated_refreshes_do_not_erode_the_series(self):
+        for day in range(1, 5):
+            price_history.record("SAP.DE", 100.0, on=date(2026, 9, day))
+
+        def window(ticker):
+            return {"2026-09-04": 100.0}
+
+        for _ in range(3):
+            price_history.refresh("SAP.DE", fetch=window)
+        assert len(price_history.load("SAP.DE")) == 4

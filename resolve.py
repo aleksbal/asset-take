@@ -21,6 +21,7 @@ from pathlib import Path
 import yfinance as yf
 
 import paths
+import quotes
 
 MAP_PATH = paths.ISIN_MAP
 TOLERANCE = 0.05  # fraction by which a candidate may differ from the broker price
@@ -125,23 +126,11 @@ def _price(ticker):
         return None, None
 
 
-# Quoted in a minor unit: the price is in hundredths of the named currency.
-# GBP is deliberately absent - it is the major unit, and scaling it here was
-# dividing genuine pound prices by a hundred.
-MINOR_UNITS = {"GBp": ("GBP", 0.01), "ZAc": ("ZAR", 0.01), "ILA": ("ILS", 0.01)}
 _FX_CACHE = {}
 
-
-def _as_major(price, currency):
-    """A pence quote is a price in hundredths of a pound, not a pound price.
-
-    Normalising here rather than at the comparison is the point: the resolved
-    row is written to positions.csv and valued downstream, where an unknown
-    code like GBp gets an exchange rate of 1.0 and a 4,000 pence share is
-    valued as 4,000 pounds.
-    """
-    major, scale = MINOR_UNITS.get(currency, (currency, 1.0))
-    return price * scale, major
+# Re-exported: the quote unit is shared with the valuation layer, which reads
+# its own prices from the provider and must scale them identically.
+_as_major = quotes.as_major
 
 
 def _fx(currency, base):
