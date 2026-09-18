@@ -262,3 +262,14 @@ class TestTrendUsesTheDisplayedPrice:
     def test_no_series_means_no_metrics(self, monkeypatch):
         monkeypatch.setattr(dashboard.price_history, "load", lambda t: {})
         assert dashboard.trend("SAP.DE", price=150.0) == {}
+
+    def test_a_stale_quote_does_not_invent_a_session(self, series):
+        """Regenerating the dashboard without a fresh snapshot would append
+        the last snapshot's price under a new date, fabricating a session
+        across whatever gap had passed and resetting days_since_peak."""
+        m = dashboard.trend("SAP.DE", price=999.0, on="2025-06-01")
+        assert m["last"] == 100.0
+
+    def test_a_quote_newer_than_the_series_is_used(self, series):
+        m = dashboard.trend("SAP.DE", price=999.0, on="2026-02-05")
+        assert m["last"] == 999.0

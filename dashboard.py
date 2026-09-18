@@ -53,10 +53,13 @@ def trend(ticker, price=None, on=None):
               price_history.load(ticker).items()]
     if not series:
         return {}
-    today = (on or date.today()).isoformat()
-    if price is not None and not any(str(day) == today for day, _ in series):
-        series.append((today, price))
-    return trends.describe(series)
+    # Only where the quote is newer than everything stored. Regenerating the
+    # dashboard without a fresh snapshot would otherwise append a stale price
+    # under a new date, inventing a session across whatever gap had passed.
+    session = str(on or "")
+    live = price if price is not None and session > str(max(
+        day for day, _ in series)) else None
+    return trends.describe(series, live=live)
 
 
 def positions(snap, by_ticker, names):
@@ -98,7 +101,8 @@ def positions(snap, by_ticker, names):
             "unpriced": False,
             # The series is in the listing's own currency, not the base, so
             # the unconverted price is the one that belongs beside it.
-            "trend": trend(p["ticker"], price=p["current_price"]),
+            "trend": trend(p["ticker"], price=p["current_price"],
+                           on=snap.get("date")),
         })
     rows.sort(key=lambda r: (r["value"] is None, -(r["value"] or 0)))
     return rows

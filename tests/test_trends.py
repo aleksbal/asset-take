@@ -168,3 +168,43 @@ class TestCalendarWindow:
         s = [(start + timedelta(days=i),
               200.0 if i == 0 else 100.0) for i in range(days + 1)]
         assert trends.drawdown(s)["peak"] == 200.0
+
+
+class TestLiveQuote:
+    """A live quote is not a close. It is what each metric is measured
+    against, but it must not be counted as one of the sessions in a window
+    that names a number of them."""
+
+    def test_it_is_not_counted_in_the_average_window(self):
+        """199 closes plus an intraday value is not a 200-session average."""
+        assert trends.describe(flat(199), live=150.0)["vs_ma200"] is None
+
+    def test_it_does_not_displace_a_settled_close(self):
+        """On a longer series, counting it in would push one close out."""
+        s = series([100.0] * 199 + [200.0])
+        m = trends.describe(s, live=100.0)
+        # The average is of the 200 stored closes, one of which is 200.
+        assert m["vs_ma200"] == pytest.approx((100.0 / 100.5 - 1) * 100)
+
+    def test_it_is_what_the_average_is_compared_against(self):
+        s = flat(200)
+        assert trends.describe(s, live=110.0)["vs_ma200"] == pytest.approx(10.0)
+
+    def test_it_can_itself_be_the_peak(self):
+        """A price at a new high has not fallen from anything."""
+        s = series([100.0 + i for i in range(220)])
+        assert trends.describe(s, live=999.0)["drawdown"]["pct"] == 0
+
+    def test_it_is_the_reported_last_price(self):
+        assert trends.describe(flat(200), live=150.0)["last"] == 150.0
+
+    def test_the_session_count_is_of_stored_closes(self):
+        """It says how much history there is, and a live quote is not it."""
+        assert trends.describe(flat(200), live=150.0)["sessions"] == 200
+
+    def test_rsi_measures_the_change_to_the_live_price(self):
+        """Unlike an average, RSI names no number of closes to average - it
+        measures the latest change, conventionally against the current."""
+        rising = series([100.0 + i for i in range(30)])
+        assert trends.describe(rising, live=50.0)["rsi"] < \
+            trends.describe(rising)["rsi"]

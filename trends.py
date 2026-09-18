@@ -65,7 +65,7 @@ def _minus_months(day, months):
     return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
 
 
-def drawdown(closes, months=DRAWDOWN_MONTHS):
+def drawdown(closes, months=DRAWDOWN_MONTHS, last=None):
     """How far below its peak the last price sits, and when that peak was.
 
     The plateau case this exists for: a price that stopped rising some time
@@ -75,11 +75,14 @@ def drawdown(closes, months=DRAWDOWN_MONTHS):
     window = _since(closes, months)
     if not window:
         return None
-    peak = max(close for _, close in window)
+    last_day, stored = window[-1]
+    # A live price can itself be the high. Comparing today against a peak it
+    # has already passed would report a fall that has not happened.
+    last = stored if last is None else last
+    peak = max(max(close for _, close in window), last)
     if peak <= 0:
         return None
-    last_day, last = window[-1]
-    peak_day = next(day for day, close in window if close == peak)
+    peak_day = next((day for day, close in window if close == peak), last_day)
     return {
         "peak": peak,
         "peak_on": peak_day,
@@ -96,12 +99,19 @@ def moving_average(closes, days):
     return sum(close for _, close in window) / len(window)
 
 
-def relative_to_average(closes, days):
-    """Percent above or below the moving average, or None."""
+def relative_to_average(closes, days, last=None):
+    """Percent above or below the moving average, or None.
+
+    `last` is compared *against* the average rather than counted in it. A
+    live quote is not a close, and folding it into the window would let 199
+    settled closes plus an intraday value be reported as a 200-session
+    average - or, on a longer series, push a settled close out to make room.
+    """
     average = moving_average(closes, days)
     if not average:
         return None
-    return (closes[-1][1] / average - 1) * 100
+    current = closes[-1][1] if last is None else last
+    return (current / average - 1) * 100
 
 
 def rsi(closes, period=RSI_PERIOD):
@@ -128,17 +138,26 @@ def rsi(closes, period=RSI_PERIOD):
     return 100.0 - 100.0 / (1 + avg_gain / avg_loss)
 
 
-def describe(closes):
-    """Every metric the series supports, with None for those it does not."""
+def describe(closes, live=None):
+    """Every metric the series supports, with None for those it does not.
+
+    `live` is the current session's price, which is not a close. It is what
+    each metric is measured against, but it never enters a window that counts
+    sessions - except RSI, which measures the latest change rather than an
+    average over a named number of closes, and is conventionally computed
+    against the current price.
+    """
     if not closes:
         return {}
     closes = sorted(closes, key=lambda row: str(row[0]))
+    last = closes[-1][1] if live is None else live
     return {
-        "last": closes[-1][1],
-        "drawdown": drawdown(closes),
-        "vs_ma50": relative_to_average(closes, 50),
-        "vs_ma200": relative_to_average(closes, 200),
-        "rsi": rsi(closes),
+        "last": last,
+        "drawdown": drawdown(closes, last=live),
+        "vs_ma50": relative_to_average(closes, 50, last=live),
+        "vs_ma200": relative_to_average(closes, 200, last=live),
+        "rsi": rsi(closes if live is None
+                   else closes + [(_as_date(closes[-1][0]), live)]),
         "sessions": len(closes),
     }
 
