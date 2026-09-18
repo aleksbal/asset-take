@@ -172,6 +172,10 @@ def _repriced(holding, existing):
     if base is None:
         return row
     row["currency"] = cur
+    # The pin names a different listing, which may quote in a different unit.
+    # Carrying the old one forward is how a pence listing ends up marked as
+    # quoted in euros, and valued a hundredfold high.
+    row["quote_currency"] = _quote_unit(row.get("ticker"))
     row["yahoo_price"] = round(px, 4)
     row["broker_price"] = holding.broker_price
     row["deviation_pct"] = (round(abs(base - holding.broker_price)

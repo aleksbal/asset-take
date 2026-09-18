@@ -40,7 +40,8 @@ path.write_text(json.dumps({
 # today's close. Independent of the snapshot above, which records the account.
 seeded, recorded, rescaled = price_history.update(
     {p.ticker: p.current_price for p in report.positions},
-    dates={p.ticker: p.price_date for p in report.positions if p.price_date})
+    dates={p.ticker: p.price_date for p in report.positions if p.price_date},
+    units={p.ticker: p.quote_currency for p in report.positions if p.quote_currency})
 
 print(f"{path}  total {report.total_value:,.2f} {base}  "
       f"({report.daily_change_pct:+.2f}%)  [{len(list(out.glob('*.json')))} days]")

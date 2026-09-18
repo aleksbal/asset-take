@@ -91,7 +91,16 @@ not.
 
 A close belongs to the session it settled in, not to the day of the run. A
 weekend or pre-close run otherwise files it under a day the market never
-traded, and the same-day guard then stops a later run correcting it.
+traded, and the same-day guard then stops a later run correcting it. A bar
+dated today may still be in progress and the provider flags no such thing, so
+it is not recorded at all: the series lags a session rather than holding an
+intraday value that can never be corrected. The live price is still used for
+the snapshot, which is a point-in-time valuation and wants it.
+
+Where a quote unit cannot be established, nothing is stored and nothing is
+valued. No marker is left either, so the next run simply retries. An unscaled
+series is worse than an absent one - it sits beside converted closes, reads
+as a corporate action, and re-seeds itself back to the raw values every run.
 
 A price is normalised to its currency's major unit the moment it is read.
 London quotes pence and reports `GBp`; downstream valuation gives an

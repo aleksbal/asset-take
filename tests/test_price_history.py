@@ -284,3 +284,65 @@ class TestSettledSession:
     def test_record_accepts_a_session_string(self):
         price_history.record("SAP.DE", 102.0, on="2026-09-17")
         assert set(price_history.load("SAP.DE")) == {"2026-09-17"}
+
+
+class TestUnknownQuoteUnit:
+    """History in an unknown unit is not history. Stored unscaled it would sit
+    beside converted daily closes and read as a corporate action, re-seeding
+    back to the same raw values on every run."""
+
+    @pytest.fixture
+    def blind(self, monkeypatch):
+        import pandas as pd
+
+        class Handle:
+            fast_info = {}          # the unit lookup fails
+
+            def history(self, **kw):
+                idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+                return pd.DataFrame({"Close": [4200.0, 4208.0]}, index=idx)
+
+        monkeypatch.setattr(price_history.yf, "Ticker", lambda t: Handle())
+
+    def test_no_history_is_returned_when_the_unit_is_unknown(self, blind):
+        assert price_history._fetch("BATS.L") == {}
+
+    def test_nothing_is_stored_so_the_next_run_retries(self, blind):
+        assert price_history.backfill("BATS.L") == 0
+        assert not price_history.path_for("BATS.L").exists()
+
+    def test_a_known_unit_is_used_instead_of_asking(self, blind):
+        """positions.csv already records it, so the fetch need not succeed."""
+        assert price_history._fetch("BATS.L", unit="GBp") == {
+            "2026-09-16": 42.0, "2026-09-17": 42.08}
+
+    def test_the_unit_reaches_the_fetch_through_update(self, blind):
+        price_history.update({"BATS.L": 42.10}, dates={"BATS.L": "2026-09-18"},
+                             units={"BATS.L": "GBp"})
+        series = price_history.load("BATS.L")
+        assert series["2026-09-17"][0] == 42.08
+
+
+class TestUnsettledSession:
+    """A bar dated today may still be in progress, and `record` refuses to
+    overwrite a date - so an intraday value written as a close stays wrong
+    for good. The series lags a session instead."""
+
+    def test_a_ticker_with_no_settled_session_is_not_recorded(self):
+        seeded, recorded, _ = price_history.update(
+            {"SAP.DE": 102.0}, dates={}, fetch=fetch_none)
+        assert recorded == 0
+        assert price_history.load("SAP.DE") == {}
+
+    def test_seeding_still_happens_for_an_unsettled_ticker(self):
+        seeded, recorded, _ = price_history.update(
+            {"SAP.DE": 102.0}, dates={}, fetch=fetch_ok)
+        assert seeded == 1 and recorded == 0
+        assert len(price_history.load("SAP.DE")) == 2
+
+    def test_a_settled_ticker_alongside_an_unsettled_one_is_recorded(self):
+        _, recorded, _ = price_history.update(
+            {"SAP.DE": 102.0, "ALV.DE": 103.0},
+            dates={"ALV.DE": "2026-09-17"}, fetch=fetch_none)
+        assert recorded == 1
+        assert set(price_history.load("ALV.DE")) == {"2026-09-17"}

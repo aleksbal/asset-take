@@ -250,8 +250,16 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                     pos.current_price, _ = quotes.as_major(pos.current_price, unit)
                     pos.previous_close, _ = quotes.as_major(pos.previous_close, unit)
                     # The last bar is the last *settled* session, which on a
-                    # weekend or before a close is not today.
-                    pos.price_date = closes.index[-1].date().isoformat()
+                    # weekend or before a close is not today. A bar dated
+                    # today may still be in progress, and the provider gives
+                    # no flag for it - so it is left unrecorded rather than
+                    # written as a close that can never be corrected. The
+                    # series lags a session; the alternative is a permanent
+                    # intraday value. The live price itself is still used for
+                    # the snapshot, which is a point-in-time valuation.
+                    bar = closes.index[-1].date()
+                    pos.price_date = (bar.isoformat()
+                                      if bar < datetime.now().date() else None)
 
             # Get company name
             try:

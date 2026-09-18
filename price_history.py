@@ -86,7 +86,7 @@ def _write(ticker, series):
         raise
 
 
-def backfill(ticker, fetch=None):
+def backfill(ticker, fetch=None, unit=None):
     """Seed a listing that has no series yet. Returns the rows added.
 
     A listing we already hold is left alone, so this is safe to call on every
@@ -96,7 +96,7 @@ def backfill(ticker, fetch=None):
     """
     if load(ticker):
         return 0
-    rows = (fetch or _fetch)(ticker)
+    rows = _fetched(ticker, fetch, unit)
     if not rows:
         return 0
     _write(ticker, {d: (c, YAHOO) for d, c in rows.items()})
@@ -122,7 +122,7 @@ def record(ticker, close, on=None):
     return True
 
 
-def _fetch(ticker):
+def _fetch(ticker, unit=None):
     """Daily closes from the provider as {iso date: close}, empty on failure.
 
     Normalised to the major unit, like every other price we store. The daily
@@ -139,16 +139,31 @@ def _fetch(ticker):
         return {}
     if hist is None or hist.empty or "Close" not in hist:
         return {}
-    try:
-        currency = handle.fast_info["currency"]
-    except Exception:
-        currency = None
+    currency = unit
+    if not currency:
+        try:
+            currency = handle.fast_info["currency"]
+        except Exception:
+            currency = None
+    if not currency:
+        # No unit means no scale, and an unscaled pence series would sit
+        # beside pound closes and read as a corporate action every run.
+        # Nothing is stored and no marker is left, so this simply retries.
+        return {}
     out = {}
     for ts, close in hist["Close"].items():
         if close == close:          # NaN closes are gaps, not prices
             out[ts.date().isoformat()] = quotes.as_major(float(close),
                                                          currency)[0]
     return out
+
+
+def _fetched(ticker, fetch, unit):
+    """The provider's history, with a known unit passed through where we have
+    one. positions.csv records it, so the fetch need not ask again."""
+    if fetch is not None:
+        return fetch(ticker)
+    return _fetch(ticker, unit=unit)
 
 
 def _looks_rescaled(previous, close):
@@ -159,7 +174,7 @@ def _looks_rescaled(previous, close):
     return ratio < 1 - SPLIT_SUSPICION or ratio > 1 / (1 - SPLIT_SUSPICION)
 
 
-def refresh(ticker, fetch=None):
+def refresh(ticker, fetch=None, unit=None):
     """Re-seed a series whose scale no longer matches the provider's.
 
     A split rewrites the provider's history retroactively; ours stays as
@@ -172,7 +187,7 @@ def refresh(ticker, fetch=None):
     series = load(ticker)
     if not series:
         return 0
-    rows = (fetch or _fetch)(ticker)
+    rows = _fetched(ticker, fetch, unit)
     if not rows:
         return 0
 
@@ -199,24 +214,34 @@ def refresh(ticker, fetch=None):
     return len(rows)
 
 
-def update(priced, dates=None, fetch=None, on=None):
+def update(priced, dates=None, units=None, fetch=None, on=None):
     """Seed any listing we hold no series for, then record today's close.
 
     A close that cannot be a day's move triggers a re-seed: the series has
     most likely been rescaled by a corporate action.
 
-    `priced` maps ticker to its latest close and `dates` to the session that
-    close settled in. Returns (seeded, recorded, rescaled) counts.
+    `priced` maps ticker to its latest close, `dates` to the session that
+    close settled in, and `units` to the venue's quote unit where it is
+    already known. Returns (seeded, recorded, rescaled) counts.
     """
     seeded = recorded = rescaled = 0
     for ticker, close in priced.items():
         if not ticker or close is None:
             continue
-        seeded += 1 if backfill(ticker, fetch=fetch) else 0
+        unit = (units or {}).get(ticker)
+        seeded += 1 if backfill(ticker, fetch=fetch, unit=unit) else 0
         series = load(ticker)
         if series and _looks_rescaled(series[max(series)][0], close):
-            rescaled += 1 if refresh(ticker, fetch=fetch) else 0
-        # The session the close settled in, not the day of the run.
-        day = (dates or {}).get(ticker) or on
+            rescaled += 1 if refresh(ticker, fetch=fetch, unit=unit) else 0
+        # The session the close settled in, not the day of the run. Where
+        # sessions are supplied and this ticker has none, the latest bar has
+        # not settled: seeding still happened, but nothing is recorded, since
+        # an intraday value written as a close could never be corrected.
+        if dates is None:
+            day = on
+        elif dates.get(ticker):
+            day = dates[ticker]
+        else:
+            continue
         recorded += 1 if record(ticker, close, on=day) else 0
     return seeded, recorded, rescaled

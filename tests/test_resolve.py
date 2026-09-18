@@ -378,3 +378,14 @@ class TestQuoteUnitIsRecorded:
     def test_a_major_unit_listing_records_its_own_currency(self, market):
         market(["SAP.DE"], {"SAP.DE": (127.40, "EUR")}, history={"SAP.DE": 505})
         assert rz.resolve(holding())["quote_currency"] == "EUR"
+
+    def test_a_pin_refreshes_the_unit_for_its_new_ticker(self, market):
+        """The documented correction flow changes a row's ticker by hand. If
+        the unit is carried over from the listing being replaced, a pence
+        listing is marked as quoted in euros and valued a hundredfold high."""
+        market([], {"BATS.L": (48.76, "GBP")}, quoted_in={"BATS.L": "GBp"})
+        row = rz.resolve(holding(currency="GBP", broker_price=48.76),
+                         existing={"ticker": "BATS.L", "status": "manual",
+                                   "currency": "EUR", "quote_currency": "EUR"})
+        assert row["quote_currency"] == "GBp"
+        assert row["currency"] == "GBP"
