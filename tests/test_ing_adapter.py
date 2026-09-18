@@ -15,7 +15,7 @@ import adapters
 from adapters import ing
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ing_depotuebersicht.csv"
-STATED_TOTAL = 19781.88  # the Depot-Gesamtwert row
+STATED_TOTAL = 20451.88  # the Depot-Gesamtwert row
 
 
 def test_detects_own_format():
@@ -43,7 +43,7 @@ def test_reconciles_to_stated_total():
 
 def test_excludes_preamble_and_trailer():
     holdings = ing.parse(FIXTURE)
-    assert len(holdings) == 4
+    assert len(holdings) == 5
     assert all(len(h.isin) == 12 for h in holdings)
     assert not any("Gesamtwert" in h.name for h in holdings)
 
@@ -56,9 +56,21 @@ def test_parses_german_decimals():
 
 
 def test_reads_cp1252_umlauts():
-    """A mis-decoded file yields replacement characters, not an exception."""
+    """Decoding cp1252 as UTF-8 corrupts silently rather than raising.
+
+    The assertion has to land on text that actually carries an umlaut: with
+    ASCII-only holding names, a broken decode still parses and still passes.
+    """
+    duerr = next(h for h in ing.parse(FIXTURE) if h.isin == "DE0005565204")
+    assert duerr.name == "DÜRR AG INH O.N."
     assert "�" not in "".join(h.name for h in ing.parse(FIXTURE))
 
+
+def test_fixture_can_actually_detect_a_decode_regression():
+    """Guards the test above: a UTF-8 read of this file must corrupt it."""
+    raw = FIXTURE.read_bytes()
+    assert "Ü".encode("cp1252") in raw
+    assert "�" in raw.decode("utf-8", errors="replace")
 
 def test_combines_report_date_with_row_time():
     h = ing.parse(FIXTURE)[0]
