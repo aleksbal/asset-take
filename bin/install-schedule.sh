@@ -41,7 +41,10 @@ AT=$(printf '%02d:%02d' "$HOUR" "$MINUTE")   # what the guard will compare again
 # the installing shell's environment: without this the agent would fall back
 # to $ROOT/data and quietly value a different portfolio than manual commands,
 # or fail outright because positions.csv is elsewhere.
-DATA="$("$ROOT/.venv/bin/python" -c 'import paths; print(paths.DATA)')"
+# From $ROOT, or `import paths` resolves against the caller's directory and
+# the installer dies before writing anything - `cd bin && ./install-schedule.sh`
+# was enough to do it.
+DATA="$(cd "$ROOT" && ./.venv/bin/python -c 'import paths; print(paths.DATA)')"
 LOGS="$DATA/logs"
 mkdir -p "$HOME/Library/LaunchAgents" "$LOGS"
 
