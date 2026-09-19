@@ -56,6 +56,21 @@ the exchange rate itself as a gain or loss. Both sides use the same rate, so
 what is shown is the local P&L expressed in the base currency; we hold no
 historical FX for the purchase date and do not pretend to.
 
+The dashboard values a snapshot but reads the cost basis from `holdings.csv`,
+so the two must describe the same portfolio. They part company whenever an
+import lands without a snapshot after it - the two are separate steps on
+purpose - and the hybrid does not look wrong: every figure renders, and a
+position valued on 300 shares against the cost of 640 reported a 44% loss
+neither file states. Sold positions fared worse: absent from the map they lost
+their name and their cost, and were reported as holdings stating no cost basis,
+which is a different claim from not being held. `mismatch()` compares the two
+before anything is rendered and the run refuses rather than blending vintages.
+It compares quantities, not just tickers - buying more of something already
+held leaves the ticker sets equal while making every derived figure for that
+position wrong, and that is the case that produced the 44%. The value-over-time
+chart still spans every snapshot: a total from a portfolio you no longer hold
+is a fact about that day, not a claim about this one.
+
 Ticker resolution compares prices converted, not raw. A listing quoted in
 another currency is the same instrument; requiring the currencies to match
 discarded the only candidate the provider offered for four holdings and is

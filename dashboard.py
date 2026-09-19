@@ -36,6 +36,46 @@ def load():
     return snaps, by_ticker, names
 
 
+def mismatch(snap, by_ticker):
+    """How a snapshot's holdings differ from the ones on file, if at all.
+
+    A snapshot is valued on its own quantities, but the cost basis beside it
+    is read from holdings.csv. The two must therefore describe the same
+    portfolio. They part company whenever an import lands without a snapshot
+    after it, and the result does not look wrong: every figure renders, and
+    a position valued at 300 shares against the cost of 640 reports a 44%
+    loss that neither file states.
+
+    Ticker sets alone do not settle it. Buying more of something already held
+    leaves them equal while making every derived figure for that position
+    wrong, so quantities are compared too.
+
+    Returns (gone, added, moved) - empty when the two agree.
+    """
+    was = {p["ticker"]: p["quantity"] for p in snap["positions"]}
+    now = {t: h.quantity for t, h in by_ticker.items()}
+    gone = sorted(set(was) - set(now))
+    added = sorted(set(now) - set(was))
+    moved = sorted((t, was[t], now[t]) for t in set(was) & set(now)
+                   if not math.isclose(was[t], now[t], rel_tol=1e-9))
+    return gone, added, moved
+
+
+def _stale(snap, gone, added, moved):
+    out = [f"holdings have changed since the last snapshot ({snap['date']}):"]
+    if gone:
+        out.append(f"  no longer held:   {', '.join(gone)}")
+    if added:
+        out.append(f"  newly held:       {', '.join(added)}")
+    if moved:
+        out.append("  quantity changed: " + ", ".join(
+            f"{t} {w:g} -> {n:g}" for t, w, n in moved))
+    out += ["", "Run snapshot.py to value what you hold now. Rendering the old "
+            "snapshot instead", "would meet its quantities with today's cost "
+            "basis and report a P&L neither states."]
+    return "\n".join(out)
+
+
 def trend(ticker, price=None, on=None):
     """Descriptive metrics for one position, or {} where there is no series.
 
@@ -249,6 +289,12 @@ def main():
     if not snaps:
         raise SystemExit("no snapshots in history/ — run snapshot.py first")
     latest = snaps[-1]
+    # Refuse to blend vintages rather than render a plausible hybrid. The
+    # value-over-time chart still spans every snapshot, since a total from a
+    # portfolio you no longer hold is a fact about that day, not about this one.
+    gone, added, moved = mismatch(latest, by_ticker)
+    if gone or added or moved:
+        raise SystemExit(_stale(latest, gone, added, moved))
     rows = positions(latest, by_ticker, names)
     total = latest["total_value"]
     priced = [r for r in rows if r["pnl"] is not None]

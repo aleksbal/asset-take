@@ -26,6 +26,20 @@ def snapshot(**kw):
     return base
 
 
+def holdings(sap_cost=None, alv_cost=None):
+    """The holdings the default snapshot was taken from.
+
+    A test about missing cost data must still hold the same positions: the
+    dashboard refuses to render a snapshot against a different portfolio, and
+    an empty map states "no longer held", which is a different claim from
+    "held, but states no cost".
+    """
+    return {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
+                              currency="EUR", avg_cost=sap_cost),
+            "ALV.DE": Holding(isin="DE0008404005", name="Allianz SE", quantity=1,
+                              currency="EUR", avg_cost=alv_cost)}
+
+
 def test_computes_pnl_where_a_cost_basis_exists():
     by_ticker = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                                    currency="EUR", avg_cost=150.0)}
@@ -127,14 +141,12 @@ class TestUnknownPortfolioPnl:
 
     def test_reports_unavailable_when_no_position_states_a_cost(
             self, tmp_path, monkeypatch):
-        html = self._html({}, tmp_path, monkeypatch)
+        html = self._html(holdings(), tmp_path, monkeypatch)
         assert "no cost basis recorded" in html
         assert "+0" not in html.split("Unrealised")[1][:200]
 
     def test_reports_the_figure_when_a_cost_exists(self, tmp_path, monkeypatch):
-        by_ticker = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE",
-                                       quantity=4, currency="EUR", avg_cost=150.0)}
-        html = self._html(by_ticker, tmp_path, monkeypatch)
+        html = self._html(holdings(sap_cost=150.0), tmp_path, monkeypatch)
         assert "on cost" in html
         assert "no cost basis recorded" not in html
 
@@ -171,11 +183,65 @@ class TestMissingCostNote:
 
     def test_note_reports_an_absent_cost_basis(self, tmp_path, monkeypatch):
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
-        monkeypatch.setattr(dashboard, "load", lambda: ([snapshot()], {}, {}))
+        monkeypatch.setattr(dashboard, "load", lambda: ([snapshot()], holdings(), {}))
         dashboard.main()
         html = (tmp_path / "out.html").read_text(encoding="utf-8")
         assert "no cost basis" in html
         assert "another currency" not in html
+
+
+class TestStaleSnapshot:
+    """The dashboard values a snapshot but reads the cost basis from holdings.
+    Where the two describe different portfolios, every figure still renders
+    and none of them is right - so it must refuse rather than blend them.
+
+    This is what an import without a snapshot after it produced: a position
+    valued on 300 shares against the cost of 640 reported a 44% loss, and
+    positions sold the day before were reported as holdings lacking cost data.
+    """
+
+    def test_agrees_where_the_snapshot_matches(self):
+        assert dashboard.mismatch(snapshot(), holdings()) == ([], [], [])
+
+    def test_reports_a_position_no_longer_held(self):
+        held = holdings()
+        del held["ALV.DE"]
+        gone, added, moved = dashboard.mismatch(snapshot(), held)
+        assert gone == ["ALV.DE"] and not added and not moved
+
+    def test_reports_a_newly_held_position(self):
+        held = holdings()
+        held["RHM.DE"] = Holding(isin="DE0007030009", name="Rheinmetall AG",
+                                 quantity=19, currency="EUR", avg_cost=564.28)
+        gone, added, moved = dashboard.mismatch(snapshot(), held)
+        assert added == ["RHM.DE"] and not gone and not moved
+
+    def test_catches_a_quantity_change_the_tickers_hide(self):
+        """Buying more of something already held leaves the ticker sets equal
+        while making every derived figure for that position wrong."""
+        held = holdings()
+        held["SAP.DE"].quantity = 9
+        gone, added, moved = dashboard.mismatch(snapshot(), held)
+        assert moved == [("SAP.DE", 4, 9)] and not gone and not added
+
+    def test_main_refuses_rather_than_rendering_a_hybrid(
+            self, tmp_path, monkeypatch):
+        out = tmp_path / "out.html"
+        monkeypatch.setattr(dashboard, "OUT", out)
+        monkeypatch.setattr(dashboard, "load",
+                            lambda: ([snapshot()], {}, {}))
+        with pytest.raises(SystemExit) as e:
+            dashboard.main()
+        assert "snapshot.py" in str(e.value)
+        assert not out.exists()          # nothing written, not even a partial
+
+    def test_the_refusal_names_what_changed(self):
+        held = holdings()
+        held["SAP.DE"].quantity = 9
+        del held["ALV.DE"]
+        msg = dashboard._stale(snapshot(), *dashboard.mismatch(snapshot(), held))
+        assert "ALV.DE" in msg and "SAP.DE 4 -> 9" in msg
+        assert "2026-09-18" in msg       # which snapshot is the stale one
 
 
 class TestTrendColumns:
