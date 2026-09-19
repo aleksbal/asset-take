@@ -22,6 +22,17 @@ cd "$ROOT"
 #
 # Set only by the launch agent, so running this by hand is never suppressed.
 if [ -n "${ASSET_TAKE_SCHEDULED_AT:-}" ]; then
+    # The window alone is not enough. A Friday job caught up when the Mac
+    # wakes on Saturday evening lands within 90 minutes of *Saturday's*
+    # schedule and would pass - filing Friday's closes under Saturday, which
+    # is the whole failure. The agent only ever fires Mon-Fri, so a scheduled
+    # run on any other day is by definition a catch-up.
+    if [ "$(date +%u)" -gt 5 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M %Z'): skipped, not a weekday. The agent"
+        echo "  fires Mon-Fri, so this is a missed run caught up after a wake;"
+        echo "  it would date the previous session's closes with today."
+        exit 0
+    fi
     due=$(date -j -f "%Y-%m-%d %H:%M" \
         "$(date +%F) $ASSET_TAKE_SCHEDULED_AT" +%s 2>/dev/null || echo 0)
     now=$(date +%s)

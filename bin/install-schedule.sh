@@ -34,6 +34,11 @@ DATA="$("$ROOT/.venv/bin/python" -c 'import paths; print(paths.DATA)')"
 LOGS="$DATA/logs"
 mkdir -p "$HOME/Library/LaunchAgents" "$LOGS"
 
+# & and < are legal in a macOS directory name and would produce a plist that
+# launchctl cannot parse. Escaped rather than trusted: the failure would be a
+# schedule that silently never ran.
+xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
 # 23:00 by default: after the US close, so both the European and the US
 # listings have settled. The snapshot is a point-in-time valuation and any
 # consistent hour would do, but a settled close is what the price series can
@@ -43,13 +48,13 @@ mkdir -p "$HOME/Library/LaunchAgents" "$LOGS"
     printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
     printf '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
     printf '<plist version="1.0"><dict>\n'
-    printf '  <key>Label</key><string>%s</string>\n' "$LABEL"
+    printf '  <key>Label</key><string>%s</string>\n' "$(xml "$LABEL")"
     printf '  <key>ProgramArguments</key><array>\n'
-    printf '    <string>/bin/bash</string><string>%s/bin/daily.sh</string>\n' "$ROOT"
+    printf '    <string>/bin/bash</string><string>%s/bin/daily.sh</string>\n' "$(xml "$ROOT")"
     printf '  </array>\n'
     printf '  <key>EnvironmentVariables</key><dict>\n'
-    printf '    <key>ASSET_TAKE_DATA</key><string>%s</string>\n' "$DATA"
-    printf '    <key>ASSET_TAKE_SCHEDULED_AT</key><string>%s</string>\n' "$AT"
+    printf '    <key>ASSET_TAKE_DATA</key><string>%s</string>\n' "$(xml "$DATA")"
+    printf '    <key>ASSET_TAKE_SCHEDULED_AT</key><string>%s</string>\n' "$(xml "$AT")"
     printf '  </dict>\n'
     printf '  <key>StartCalendarInterval</key><array>\n'
     for d in 1 2 3 4 5; do
@@ -58,8 +63,8 @@ mkdir -p "$HOME/Library/LaunchAgents" "$LOGS"
         printf '<key>Minute</key><integer>%d</integer></dict>\n' "$((10#$MINUTE))"
     done
     printf '  </array>\n'
-    printf '  <key>StandardOutPath</key><string>%s/daily.log</string>\n' "$LOGS"
-    printf '  <key>StandardErrorPath</key><string>%s/daily.log</string>\n' "$LOGS"
+    printf '  <key>StandardOutPath</key><string>%s/daily.log</string>\n' "$(xml "$LOGS")"
+    printf '  <key>StandardErrorPath</key><string>%s/daily.log</string>\n' "$(xml "$LOGS")"
     printf '  <key>RunAtLoad</key><false/>\n'
     printf '</dict></plist>\n'
 } > "$PLIST"
@@ -70,5 +75,8 @@ launchctl bootstrap "gui/$UID" "$PLIST"
 echo "installed $LABEL - weekdays at $AT"
 echo "  data:    $DATA"
 echo "  log:     $LOGS/daily.log"
-echo "  run now: launchctl kickstart -p gui/$UID/$LABEL"
+# Not `launchctl kickstart`: that starts the agent with the schedule variable
+# set, so the catch-up guard would skip it at any other time of day - an
+# advertised command that silently does nothing.
+echo "  run now: $ROOT/bin/daily.sh"
 echo "  remove:  $ROOT/bin/install-schedule.sh --remove"
