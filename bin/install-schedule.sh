@@ -24,7 +24,15 @@ while [ $# -gt 0 ]; do
 done
 
 HOUR="${AT%%:*}"; MINUTE="${AT##*:}"
-mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/data/logs"
+
+# The effective data directory, asked of paths.py rather than assumed, so an
+# ASSET_TAKE_DATA override reaches the scheduled run. launchd does not inherit
+# the installing shell's environment: without this the agent would fall back
+# to $ROOT/data and quietly value a different portfolio than manual commands,
+# or fail outright because positions.csv is elsewhere.
+DATA="$("$ROOT/.venv/bin/python" -c 'import paths; print(paths.DATA)')"
+LOGS="$DATA/logs"
+mkdir -p "$HOME/Library/LaunchAgents" "$LOGS"
 
 # 23:00 by default: after the US close, so both the European and the US
 # listings have settled. The snapshot is a point-in-time valuation and any
@@ -39,6 +47,10 @@ mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/data/logs"
     printf '  <key>ProgramArguments</key><array>\n'
     printf '    <string>/bin/bash</string><string>%s/bin/daily.sh</string>\n' "$ROOT"
     printf '  </array>\n'
+    printf '  <key>EnvironmentVariables</key><dict>\n'
+    printf '    <key>ASSET_TAKE_DATA</key><string>%s</string>\n' "$DATA"
+    printf '    <key>ASSET_TAKE_SCHEDULED_AT</key><string>%s</string>\n' "$AT"
+    printf '  </dict>\n'
     printf '  <key>StartCalendarInterval</key><array>\n'
     for d in 1 2 3 4 5; do
         printf '    <dict><key>Weekday</key><integer>%d</integer>' "$d"
@@ -46,8 +58,8 @@ mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/data/logs"
         printf '<key>Minute</key><integer>%d</integer></dict>\n' "$((10#$MINUTE))"
     done
     printf '  </array>\n'
-    printf '  <key>StandardOutPath</key><string>%s/data/logs/daily.log</string>\n' "$ROOT"
-    printf '  <key>StandardErrorPath</key><string>%s/data/logs/daily.log</string>\n' "$ROOT"
+    printf '  <key>StandardOutPath</key><string>%s/daily.log</string>\n' "$LOGS"
+    printf '  <key>StandardErrorPath</key><string>%s/daily.log</string>\n' "$LOGS"
     printf '  <key>RunAtLoad</key><false/>\n'
     printf '</dict></plist>\n'
 } > "$PLIST"
@@ -56,6 +68,7 @@ launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$UID" "$PLIST"
 
 echo "installed $LABEL - weekdays at $AT"
-echo "  log:     $ROOT/data/logs/daily.log"
+echo "  data:    $DATA"
+echo "  log:     $LOGS/daily.log"
 echo "  run now: launchctl kickstart -p gui/$UID/$LABEL"
 echo "  remove:  $ROOT/bin/install-schedule.sh --remove"

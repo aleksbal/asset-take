@@ -14,6 +14,26 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# launchd runs a missed StartCalendarInterval job when the Mac wakes, and
+# snapshot.py dates its output by the clock. A Friday run caught up on
+# Saturday morning would therefore file Friday's closes under Saturday - the
+# false history point this schedule exists to avoid, in a series that cannot
+# be corrected afterwards. A skipped day is honest; a mislabelled one is not.
+#
+# Set only by the launch agent, so running this by hand is never suppressed.
+if [ -n "${ASSET_TAKE_SCHEDULED_AT:-}" ]; then
+    due=$(date -j -f "%Y-%m-%d %H:%M" \
+        "$(date +%F) $ASSET_TAKE_SCHEDULED_AT" +%s 2>/dev/null || echo 0)
+    now=$(date +%s)
+    drift=$(( now > due ? now - due : due - now ))
+    if [ "$due" -gt 0 ] && [ "$drift" -gt 5400 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M %Z'): skipped, more than 90 minutes from"
+        echo "  the $ASSET_TAKE_SCHEDULED_AT schedule. A catch-up run would date"
+        echo "  today's snapshot with the previous session's closes."
+        exit 0
+    fi
+fi
+
 PY="$ROOT/.venv/bin/python"
 [ -x "$PY" ] || { echo "no venv at $PY - see README" >&2; exit 1; }
 
