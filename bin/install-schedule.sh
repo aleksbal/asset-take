@@ -23,7 +23,18 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-HOUR="${AT%%:*}"; MINUTE="${AT##*:}"
+# Validated before anything is written. `--at 7` would otherwise split into
+# HOUR=7 MINUTE=7 - a 07:07 schedule nobody asked for - and pass "7" to the
+# agent, where the catch-up guard cannot parse it and stops guarding. A bad
+# argument must not quietly disable a safety check or replace a working plist.
+if ! [[ "$AT" =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
+    echo "--at must be HH:MM (got '$AT')" >&2; exit 2
+fi
+HOUR=$((10#${BASH_REMATCH[1]})); MINUTE=$((10#${BASH_REMATCH[2]}))
+if [ "$HOUR" -gt 23 ] || [ "$MINUTE" -gt 59 ]; then
+    echo "--at must be a real time of day (got '$AT')" >&2; exit 2
+fi
+AT=$(printf '%02d:%02d' "$HOUR" "$MINUTE")   # what the guard will compare against
 
 # The effective data directory, asked of paths.py rather than assumed, so an
 # ASSET_TAKE_DATA override reaches the scheduled run. launchd does not inherit
@@ -59,8 +70,8 @@ xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/
     printf '  <key>StartCalendarInterval</key><array>\n'
     for d in 1 2 3 4 5; do
         printf '    <dict><key>Weekday</key><integer>%d</integer>' "$d"
-        printf '<key>Hour</key><integer>%d</integer>' "$((10#$HOUR))"
-        printf '<key>Minute</key><integer>%d</integer></dict>\n' "$((10#$MINUTE))"
+        printf '<key>Hour</key><integer>%d</integer>' "$HOUR"
+        printf '<key>Minute</key><integer>%d</integer></dict>\n' "$MINUTE"
     done
     printf '  </array>\n'
     printf '  <key>StandardOutPath</key><string>%s/daily.log</string>\n' "$(xml "$LOGS")"
