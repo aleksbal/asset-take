@@ -254,3 +254,40 @@ class TestCurrenciesNeeded:
         rates = {"EUR": 1.0, "USD": 0.87}          # no CHF
         assert pm.cost_of(pos, rates, "EUR") is None
         assert pm.value_of(pos, rates, "EUR").amount == pytest.approx(261.0)
+
+
+class TestPartialPnlTotal:
+    """A total that silently excludes positions states a sum of the rows that
+    happened to work as though it were the portfolio. fetch_fx_rates omits a
+    pair it cannot price rather than inventing 1.0, so this is reachable even
+    after every currency has been requested."""
+
+    def report(self):
+        import portfolio_monitor as pm
+        priced = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR",
+                             cost_currency="EUR", avg_cost=100.0,
+                             current_price=150.0, previous_close=150.0)
+        rateless = pm.Position(ticker="GE", quantity=1, currency="EUR",
+                               cost_currency="CHF", avg_cost=100.0,
+                               current_price=150.0, previous_close=150.0)
+        return pm, pm.calculate_report([priced, rateless], "EUR", {"EUR": 1.0},
+                                       pm.AlertConfig())
+
+    def test_the_total_is_marked_incomplete(self):
+        pm, report = self.report()
+        body = pm.generate_long_report(report)
+        assert "TOTAL*" in body
+
+    def test_the_omitted_position_is_named(self):
+        pm, report = self.report()
+        body = pm.generate_long_report(report)
+        assert "GE" in body.split("* excludes")[1]
+
+    def test_a_complete_total_is_not_marked(self):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR",
+                          cost_currency="EUR", avg_cost=100.0,
+                          current_price=150.0, previous_close=150.0)
+        report = pm.calculate_report([pos], "EUR", {"EUR": 1.0}, pm.AlertConfig())
+        body = pm.generate_long_report(report)
+        assert "TOTAL*" not in body and "* excludes" not in body

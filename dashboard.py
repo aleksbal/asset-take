@@ -105,6 +105,26 @@ def _stale(snap, gone, added, changed):
     return "\n".join(out)
 
 
+def comparable(snaps):
+    """The run of snapshots sharing the latest one's base currency.
+
+    A total is stored in the base currency of the run that produced it.
+    Changing `base_currency` makes every earlier total a different quantity,
+    and plotting them in one series draws the switch as a gain - then labels
+    the old points with the new currency, which is the more serious half.
+
+    The longest suffix rather than every match: a base that changed and
+    changed back would otherwise splice two runs across the gap between them.
+    """
+    base = snaps[-1].get("base_currency", "EUR")
+    run = []
+    for snap in reversed(snaps):
+        if snap.get("base_currency", "EUR") != base:
+            break
+        run.append(snap)
+    return list(reversed(run))
+
+
 def trend(ticker, price=None, on=None):
     """Descriptive metrics for one position, or {} where there is no series.
 
@@ -349,11 +369,14 @@ def main():
         raise SystemExit("no snapshots in history/ — run snapshot.py first")
     latest = snaps[-1]
     # Refuse to blend vintages rather than render a plausible hybrid. The
-    # value-over-time chart still spans every snapshot, since a total from a
-    # portfolio you no longer hold is a fact about that day, not about this one.
-    gone, added, moved = mismatch(latest, by_ticker)
-    if gone or added or moved:
-        raise SystemExit(_stale(latest, gone, added, moved))
+    # value-over-time chart still spans earlier snapshots, since a total from a
+    # portfolio you no longer hold is a fact about that day, not about this one
+    # - but only those denominated in the same currency as this one.
+    gone, added, changed = mismatch(latest, by_ticker)
+    if gone or added or changed:
+        raise SystemExit(_stale(latest, gone, added, changed))
+    series = comparable(snaps)
+    dropped = len(snaps) - len(series)
     rows = positions(latest, by_ticker, names)
     total = latest["total_value"]
     priced = [r for r in rows if r["pnl"] is not None]
@@ -378,7 +401,11 @@ def main():
                  else "no cost basis recorded"),
         pnl_cls="up" if (pnl or 0) >= 0 else "dn",
         n=len(rows), top5=f"{top5:.0f}",
-        caveat=((f'<p class="note"><b>{len(unpriced)} position'
+        caveat=((f'<p class="note">{dropped} earlier snapshot'
+                 f'{"s are" if dropped > 1 else " is"} denominated in another '
+                 f'currency and {"are" if dropped > 1 else "is"} left out of '
+                 f'the value chart.</p>') if dropped else "")
+        + ((f'<p class="note"><b>{len(unpriced)} position'
                  f'{"s" if len(unpriced)>1 else ""} could not be priced</b> '
                  f'({", ".join(r["ticker"] for r in unpriced)}) and {"are" if len(unpriced)>1 else "is"} '
                  f'excluded from the total, which is therefore understated.</p>')
@@ -388,7 +415,7 @@ def main():
                 f'({", ".join(r["ticker"] for r in no_cost)}), so '
                 f'P&amp;L excludes {"them" if len(no_cost)>1 else "it"}.</p>')
                if no_cost else "",
-        chart=line_chart(snaps),
+        chart=line_chart(series),
         donut=donut(rows),
         table=table(rows),
     ), encoding="utf-8")

@@ -540,13 +540,19 @@ def generate_long_report(report: PortfolioReport) -> str:
         lines.append("  " + "-" * 56)
 
         total_unrealized = 0
+        omitted = []
         for pos in positions_with_cost:
             # Both sides converted, because they need not share a currency any
             # more. Subtracting an unconverted cost from a converted value
             # reports the exchange rate itself as a gain or loss.
             value = value_of(pos, report.fx_rates, report.base_currency)
             cost = cost_of(pos, report.fx_rates, report.base_currency)
+            # fetch_fx_rates omits a pair it cannot price rather than
+            # inventing 1.0, so a cost currency can still arrive without a
+            # rate. Skipping silently and then printing TOTAL states a sum of
+            # the rows that happened to work as though it were the portfolio.
             if value is None or cost is None or not cost.amount:
+                omitted.append(pos.ticker)
                 continue
             pnl_base = value.amount - cost.amount
             pnl_pct = (value.amount / cost.amount - 1) * 100
@@ -558,7 +564,13 @@ def generate_long_report(report: PortfolioReport) -> str:
             lines.append(f"  {pos.ticker:<10} {per_share_cost:>12} {per_share_now:>12} {format_currency(pnl_base, report.base_currency):>14} {pnl_pct:>+9.2f}%")
 
         lines.append("  " + "-" * 56)
-        lines.append(f"  {'TOTAL':<10} {'':<12} {'':<12} {format_currency(total_unrealized, report.base_currency):>14}")
+        label = "TOTAL*" if omitted else "TOTAL"
+        lines.append(f"  {label:<10} {'':<12} {'':<12} {format_currency(total_unrealized, report.base_currency):>14}")
+        if omitted:
+            lines.append(f"  * excludes {len(omitted)} position"
+                         f"{'s' if len(omitted) > 1 else ''} with no exchange "
+                         f"rate for the cost basis ({', '.join(omitted)}), so "
+                         f"the total is understated by an unknown amount.")
         lines.append("")
 
     # FX Rates

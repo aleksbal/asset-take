@@ -291,6 +291,54 @@ class TestBaseCurrencyLabels:
         assert "> EUR</span>" in self._html("EUR", tmp_path, monkeypatch)
 
 
+class TestMixedBaseCurrencies:
+    """Totals are stored in whatever base produced them.
+
+    Changing `base_currency` makes every earlier total a different quantity.
+    Plotting them in one series draws the switch as a gain and labels the old
+    points with the new currency.
+    """
+
+    def snap(self, day, base, total):
+        s = snapshot(date=day, base_currency=base, total_value=total)
+        s["fx_rates"] = {base: 1.0}
+        return s
+
+    def test_a_single_base_keeps_every_snapshot(self):
+        snaps = [self.snap("2026-09-17", "EUR", 100.0),
+                 self.snap("2026-09-18", "EUR", 110.0)]
+        assert dashboard.comparable(snaps) == snaps
+
+    def test_earlier_snapshots_in_another_base_are_dropped(self):
+        snaps = [self.snap("2026-09-17", "EUR", 100.0),
+                 self.snap("2026-09-18", "USD", 118.0)]
+        kept = dashboard.comparable(snaps)
+        assert [s["date"] for s in kept] == ["2026-09-18"]
+
+    def test_a_base_that_changed_and_changed_back_is_not_spliced(self):
+        """Every-match would join two EUR runs across the USD gap between
+        them and draw a line through a discontinuity."""
+        snaps = [self.snap("2026-09-16", "EUR", 100.0),
+                 self.snap("2026-09-17", "USD", 118.0),
+                 self.snap("2026-09-18", "EUR", 102.0)]
+        assert [s["date"] for s in dashboard.comparable(snaps)] == ["2026-09-18"]
+
+    def test_a_snapshot_silent_on_its_base_is_read_as_eur(self):
+        old = snapshot(date="2026-09-17", total_value=100.0)
+        del old["base_currency"]
+        snaps = [old, self.snap("2026-09-18", "EUR", 110.0)]
+        assert len(dashboard.comparable(snaps)) == 2
+
+    def test_the_dashboard_says_what_it_left_out(self, tmp_path, monkeypatch):
+        snap, held = matched(sap_cost=150.0)
+        older = snapshot(date="2026-09-17", base_currency="USD", total_value=99.0)
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "load", lambda: ([older, snap], held, {}))
+        dashboard.main()
+        html = (tmp_path / "out.html").read_text(encoding="utf-8")
+        assert "denominated in another currency" in html
+
+
 class TestStaleSnapshot:
     """The dashboard values a snapshot but reads the cost basis from holdings.
     Where the two describe different portfolios, every figure still renders
