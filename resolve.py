@@ -34,6 +34,12 @@ PRICE_NOISE = 0.01
 # Set below a full trading year on purpose - a listing that missed a few days
 # to local holidays is no less usable than one that did not.
 SUFFICIENT_HISTORY = 200
+# Whether a listing quoting in the holding's own currency should be preferred
+# over a deeper one that does not. Off: currency is a property of a listing,
+# not a reason to choose one, and a cost basis now carries its own currency
+# and converts. Set true to keep a position in one unit throughout, accepting
+# a thinner listing where that is the only way to get it.
+PREFER_QUOTE_CURRENCY = False
 TICKER = re.compile(r"^[A-Z0-9]{1,6}(\.[A-Z]{1,3})?$")
 ISIN = re.compile(r"^[A-Z]{2}[A-Z0-9]{10}$")
 COLUMNS = ["isin", "ticker", "currency", "quote_currency", "yahoo_price", "broker_price", "deviation_pct", "status", "display_name", "name"]
@@ -211,7 +217,7 @@ def _row(holding, ticker="", currency=None, price="", deviation="", status="unre
             "deviation_pct": deviation, "status": status, "name": holding.name}
 
 
-def resolve(holding, existing=None):
+def resolve(holding, existing=None, prefer_currency=None):
     """Map one holding to a ticker.
 
     Where the source states a valuation, candidates are verified against it and
@@ -221,6 +227,9 @@ def resolve(holding, existing=None):
     is the point: an unverified mapping may be the wrong instrument entirely,
     and nothing downstream can tell.
     """
+    prefer_currency = (PREFER_QUOTE_CURRENCY if prefer_currency is None
+                       else prefer_currency)
+
     if existing and existing.get("status") == "manual":
         return _repriced(holding, existing)
 
@@ -264,10 +273,12 @@ def resolve(holding, existing=None):
     if not matches:
         return _row(holding)
 
-    # Nothing to verify against, so currency is the only signal there is: a
-    # listing already in the holding's currency is the safer guess.
+    # Nothing to verify against, so there is no price signal at all. Depth is
+    # the one property that can still be read off a candidate, with currency
+    # behind it as a tiebreak.
     if not holding.broker_price:
-        sym, px, cur, _ = max(matches, key=lambda m: m[2] == holding.currency)
+        sym, px, cur, _ = max(matches, key=lambda m: (
+            min(_depth(m[0]), SUFFICIENT_HISTORY), m[2] == holding.currency))
         return _row(holding, sym, cur, round(px, 4), "", "unverified")
 
     matches = [(sym, px, abs(base - holding.broker_price) / holding.broker_price,
@@ -289,10 +300,18 @@ def resolve(holding, existing=None):
     else:
         closest = min(m[2] for m in verified)
         tied = [m for m in verified if m[2] <= closest + PRICE_NOISE]
-        # Same currency first: converting is sound but adds a rate we do not
-        # hold historically, so it is a last resort rather than a preference.
-        best = max(tied, key=lambda m: (m[3] == holding.currency,
-                                        min(_depth(m[0]), SUFFICIENT_HISTORY),
+        # Depth first. Currency used to rank above it, which is how a listing
+        # with one day of history beat one with 251 over four cents - the
+        # euro stub priced GE Aerospace correctly and could not chart it, and
+        # the only remedy was a hand-written pin.
+        #
+        # That preference existed to keep a cost basis that was dropped on a
+        # currency mismatch. The cost basis now carries its own currency and
+        # converts, so there is nothing left for it to protect. It survives
+        # only as an opt-in, below depth, for a holder who wants one unit
+        # throughout and accepts a thinner listing to get it.
+        best = max(tied, key=lambda m: (min(_depth(m[0]), SUFFICIENT_HISTORY),
+                                        prefer_currency and m[3] == holding.currency,
                                         -m[2]))
 
     sym, px, dev, cur = best

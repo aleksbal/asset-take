@@ -17,6 +17,7 @@ ISIN_MAP = DATA / "isin_map.csv"  # your corrections — the one you edit
 HISTORY = DATA / "history"        # daily snapshots
 PRICES = DATA / "prices"          # per-listing price series
 DASHBOARD = DATA / "dashboard.html"
+CONFIG = DATA / "config.json"   # base currency, alert thresholds, preferences
 
 for d in (DATA, IMPORTS, HISTORY, PRICES):
     d.mkdir(parents=True, exist_ok=True)

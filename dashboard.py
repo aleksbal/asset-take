@@ -14,6 +14,7 @@ import canonical
 import paths
 import price_history
 import trends
+from money import Converted, Money
 
 ROOT = Path(__file__).parent
 OUT = paths.DASHBOARD
@@ -34,6 +35,94 @@ def load():
     by_ticker = {r["ticker"]: held[i] for i, r in tmap.items() if i in held and r["ticker"]}
     names = {r["ticker"]: (r.get("display_name") or "").strip() for r in tmap.values() if r.get("ticker")}
     return snaps, by_ticker, names
+
+
+def mismatch(snap, by_ticker):
+    """How a snapshot's holdings differ from the ones on file, if at all.
+
+    A snapshot is valued on its own quantities, but the cost basis beside it
+    is read from holdings.csv. The two must therefore describe the same
+    portfolio. They part company whenever an import lands without a snapshot
+    after it, and the result does not look wrong: every figure renders, and
+    a position valued at 300 shares against the cost of 640 reports a 44%
+    loss that neither file states.
+
+    Ticker sets alone do not settle it, and neither do quantities. Everything
+    a row is built from must agree, because any one of them moving underneath
+    the snapshot produces the same kind of figure: a broker correction or a
+    sell-and-rebuy at the same size leaves the quantity equal while the cost
+    basis changes, and the P&L is then this snapshot's value against another
+    day's cost.
+
+    Returns (gone, added, changed) - all empty when the two agree.
+    """
+    was = {p["ticker"]: p for p in snap["positions"]}
+    gone = sorted(set(was) - set(by_ticker))
+    added = sorted(set(by_ticker) - set(was))
+    changed = []
+    for ticker in sorted(set(was) & set(by_ticker)):
+        p, h = was[ticker], by_ticker[ticker]
+        if not _agrees(p.get("quantity"), h.quantity):
+            changed.append(f"{ticker} quantity "
+                           f"{_shown(p.get('quantity'))} -> {_shown(h.quantity)}")
+        if not _agrees(p.get("avg_cost"), h.avg_cost):
+            changed.append(f"{ticker} cost "
+                           f"{_shown(p.get('avg_cost'))} -> {_shown(h.avg_cost)}")
+        # Only where the snapshot states one. A snapshot written before
+        # positions carried a cost currency is silent on it, which is not the
+        # same as disagreeing.
+        if p.get("cost_currency") and p["cost_currency"] != h.currency:
+            changed.append(f"{ticker} cost currency "
+                           f"{p['cost_currency']} -> {h.currency}")
+    return gone, added, changed
+
+
+def _agrees(a, b):
+    """Whether two optional numbers say the same thing.
+
+    Absent equals absent; absent never equals a number. A cost basis that
+    appeared or vanished is a change, not a rounding difference.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    return math.isclose(a, b, rel_tol=1e-9)
+
+
+def _shown(value):
+    return "—" if value is None else f"{value:g}"
+
+
+def _stale(snap, gone, added, changed):
+    out = [f"holdings have changed since the last snapshot ({snap['date']}):"]
+    if gone:
+        out.append(f"  no longer held: {', '.join(gone)}")
+    if added:
+        out.append(f"  newly held:     {', '.join(added)}")
+    out += [f"  changed:        {c}" for c in changed]
+    out += ["", "Run snapshot.py to value what you hold now. Rendering the old "
+            "snapshot instead", "would meet its quantities with today's cost "
+            "basis and report a P&L neither states."]
+    return "\n".join(out)
+
+
+def comparable(snaps):
+    """The run of snapshots sharing the latest one's base currency.
+
+    A total is stored in the base currency of the run that produced it.
+    Changing `base_currency` makes every earlier total a different quantity,
+    and plotting them in one series draws the switch as a gain - then labels
+    the old points with the new currency, which is the more serious half.
+
+    The longest suffix rather than every match: a base that changed and
+    changed back would otherwise splice two runs across the gap between them.
+    """
+    base = snaps[-1].get("base_currency", "EUR")
+    run = []
+    for snap in reversed(snaps):
+        if snap.get("base_currency", "EUR") != base:
+            break
+        run.append(snap)
+    return list(reversed(run))
 
 
 def trend(ticker, price=None, on=None):
@@ -63,6 +152,38 @@ def trend(ticker, price=None, on=None):
     return trends.describe(series, live=price, live_on=session)
 
 
+def _converted(amount, currency, rates, base):
+    """`amount` in `base` at a rate the snapshot recorded, or None without one.
+
+    Never a default of 1, which values a foreign amount as a domestic one and
+    is indistinguishable from a correct figure on the page.
+    """
+    if amount is None or not currency:
+        return None
+    rate = rates.get(currency)
+    return None if rate is None else Converted(Money(amount, currency), rate, base)
+
+
+def _cost_of(p, h, rates, base):
+    """A position's cost basis in `base`, or None where it has none.
+
+    Where the snapshot records a cost currency, that is the denomination.
+    Where it does not, the snapshot predates the column, and the position's
+    own listing currency is the recoverable one: the writer of that era
+    emitted a cost basis only when the two agreed, and blanked it otherwise.
+
+    Today's `h.currency` is not a safe substitute. A broker correction that
+    changes the holding currency without changing the quantity or the number
+    is accepted by `mismatch()` for exactly such a legacy snapshot, and would
+    then reinterpret an old cost under a denomination it never had - reporting
+    the rate between them as P&L.
+    """
+    if not (h and h.avg_cost):
+        return None
+    return _converted(h.quantity * h.avg_cost,
+                      p.get("cost_currency") or p.get("currency"), rates, base)
+
+
 def positions(snap, by_ticker, names):
     """Rows for the table and donut.
 
@@ -72,34 +193,43 @@ def positions(snap, by_ticker, names):
     """
     rows = []
     total = snap["total_value"]
+    base = snap.get("base_currency", "EUR")
+    rates = snap["fx_rates"]
     for p in snap["positions"]:
         h = by_ticker.get(p["ticker"])
-        fx = snap["fx_rates"].get(p["currency"], 1)
-        if p.get("current_price") is None:
+        value = _converted(p["quantity"] * (p.get("current_price") or 0),
+                           p["currency"], rates, base)
+        if p.get("current_price") is None or value is None:
             rows.append({
                 "name": names.get(p["ticker"]) or (h.name if h else p["ticker"]),
                 "ticker": p["ticker"], "qty": p["quantity"], "price": None,
                 "currency": p["currency"], "value": None, "weight": None,
-                "day_eur": None, "day_pct": None, "pnl": None, "pnl_pct": None,
-                "unpriced": True, "trend": {},
+                "day_base": None, "day_pct": None, "pnl": None, "pnl_pct": None,
+                "unpriced": True, "cost_unconverted": False, "trend": {},
             })
             continue
-        value = p["quantity"] * p["current_price"] * fx
-        prev = p["quantity"] * (p.get("previous_close") or p["current_price"]) * fx
-        # avg_cost is denominated in the holding's own currency, so it needs
-        # the same conversion the value got. Subtracting an unconverted USD
-        # cost from a EUR value reports the exchange rate as a loss.
-        cost_fx = snap["fx_rates"].get(h.currency, fx) if h else fx
-        cost = (h.quantity * h.avg_cost * cost_fx) if (h and h.avg_cost) else None
+        previous = _converted(
+            p["quantity"] * (p.get("previous_close") or p["current_price"]),
+            p["currency"], rates, base)
+        # avg_cost is denominated in the currency the broker charged in, which
+        # need not be the listing's, so it is converted on its own rate rather
+        # than the position's. Falling back to the position's rate converted a
+        # USD cost basis at the EUR rate and reported the difference as P&L.
+        cost = _cost_of(p, h, rates, base)
+        value, prev = value.amount, previous.amount if previous else None
         rows.append({
             "name": names.get(p["ticker"]) or (h.name if h else p["ticker"]),
             "ticker": p["ticker"], "qty": p["quantity"], "price": p["current_price"],
             "currency": p["currency"], "value": value, "weight": value / total * 100,
-            "day_eur": value - prev,
+            "day_base": (value - prev) if prev is not None else None,
             "day_pct": (value / prev - 1) * 100 if prev else 0,
-            "pnl": (value - cost) if cost else None,
-            "pnl_pct": ((value / cost - 1) * 100) if cost else None,
+            "pnl": (value - cost.amount) if cost and cost.amount else None,
+            "pnl_pct": ((value / cost.amount - 1) * 100) if cost and cost.amount else None,
             "unpriced": False,
+            # States a cost basis, but its currency has no rate. Different
+            # from stating none, and the difference is what the reader needs:
+            # one is a fact about the holding, the other about our data.
+            "cost_unconverted": bool(h and h.avg_cost) and cost is None,
             # The series is in the listing's own currency, not the base, so
             # the unconverted price is the one that belongs beside it.
             # price_date names the session the quote settled in, so where
@@ -113,7 +243,7 @@ def positions(snap, by_ticker, names):
     return rows
 
 
-def eur(x, dp=0):
+def num(x, dp=0):
     return f"{x:,.{dp}f}".replace(",", " ")
 
 
@@ -139,11 +269,11 @@ def line_chart(snaps, w=760, h=220, pad=(16, 56, 28, 8)):
     area = path + f" L{coords[-1][0]:.1f},{top+ih} L{coords[0][0]:.1f},{top+ih} Z"
     grid = "".join(
         f'<line class="grid" x1="{left}" x2="{left+iw}" y1="{top+ih*i/3:.1f}" y2="{top+ih*i/3:.1f}"/>'
-        f'<text class="axis" x="{left+iw+6}" y="{top+ih*i/3+4:.1f}">{eur(hi-(hi-lo)*i/3)}</text>'
+        f'<text class="axis" x="{left+iw+6}" y="{top+ih*i/3+4:.1f}">{num(hi-(hi-lo)*i/3)}</text>'
         for i in range(4))
     dots = "".join(
         f'<circle class="pt" cx="{x:.1f}" cy="{y:.1f}" r="4" '
-        f'data-d="{pts[i][0]}" data-v="{eur(pts[i][1], 2)}"/>'
+        f'data-d="{pts[i][0]}" data-v="{num(pts[i][1], 2)}"/>'
         for i, (x, y) in enumerate(coords))
     first, last = pts[0][0], pts[-1][0]
     return f'''<svg viewBox="0 0 {w} {h}" class="chart" role="img"
@@ -152,7 +282,7 @@ def line_chart(snaps, w=760, h=220, pad=(16, 56, 28, 8)):
       <path class="area" d="{area}"/><path class="line" d="{path}"/>{dots}
       <text class="axis" x="{left}" y="{h-8}">{first}</text>
       <text class="axis end" x="{left+iw}" y="{h-8}">{last}</text>
-      <text class="lbl" x="{coords[-1][0]-6:.1f}" y="{coords[-1][1]-12:.1f}">{eur(pts[-1][1])}</text>
+      <text class="lbl" x="{coords[-1][0]-6:.1f}" y="{coords[-1][1]-12:.1f}">{num(pts[-1][1])}</text>
     </svg>'''
 
 
@@ -224,12 +354,12 @@ def _row_html(r):
     t = r.get("trend") or {}
     return (f'<tr><td class="nm" title="{r["name"]}">{r["name"]}<span class="tk">{r["ticker"]}</span></td>'
             f'<td class="n">{r["qty"]:g}</td>'
-            f'<td class="n">{eur(r["price"], 2)} {r["currency"]}</td>'
-            f'<td class="n">{eur(r["value"])}</td>'
+            f'<td class="n">{num(r["price"], 2)} {r["currency"]}</td>'
+            f'<td class="n">{num(r["value"])}</td>'
             f'<td class="n w"><span class="bar" style="--p:{r["weight"]:.1f}%"></span>{r["weight"]:.1f}%</td>'
             f'<td class="n {"up" if r["day_pct"]>=0 else "dn"}">{r["day_pct"]:+.2f}%</td>'
             f'<td class="n {"up" if (r["pnl"] or 0)>=0 else "dn"}">'
-            f'{(eur(r["pnl"]) + " (" + format(r["pnl_pct"], "+.1f") + "%)") if r["pnl"] is not None else "—"}</td>'
+            f'{(num(r["pnl"]) + " (" + format(r["pnl_pct"], "+.1f") + "%)") if r["pnl"] is not None else "—"}</td>'
             f'{_peak_cell(t)}{_ma_cell(t)}{_rsi_cell(t)}</tr>')
 
 
@@ -244,11 +374,62 @@ def table(rows):
     </tr></thead><tbody>{body}</tbody></table>"""
 
 
+def _notes(unpriced, no_rate, no_cost, dropped):
+    """Everything the figures above do not say for themselves.
+
+    Built as a list rather than a chain of conditional concatenations. The
+    chain read `A + B + C if no_cost else ""`, which Python groups as
+    `(A + B + C) if no_cost else ""` - so a portfolio where every position
+    stated a cost basis suppressed the others, including the one saying
+    positions could not be priced and the total is understated. Exactly the
+    warning that must never be the one to go missing.
+    """
+    def plural(rows, s="s", one=""):
+        return s if len(rows) > 1 else one
+
+    out = []
+    if unpriced:
+        out.append(f'<p class="note"><b>{len(unpriced)} position'
+                   f'{plural(unpriced)} could not be priced</b> '
+                   f'({", ".join(r["ticker"] for r in unpriced)}) and '
+                   f'{plural(unpriced, "are", "is")} excluded from the total, '
+                   f'which is therefore understated.</p>')
+    if no_rate:
+        out.append(f'<p class="note"><b>{len(no_rate)} position'
+                   f'{plural(no_rate)} state{plural(no_rate, "", "s")} a cost '
+                   f'basis in a currency with no available rate</b> '
+                   f'({", ".join(r["ticker"] for r in no_rate)}), so the '
+                   f'unrealised P&amp;L above excludes '
+                   f'{plural(no_rate, "them", "it")}. A P&amp;L can be '
+                   f'negative, so {plural(no_rate, "they", "it")} could move '
+                   f'that figure either way.</p>')
+    if no_cost:
+        out.append(f'<p class="note">{len(no_cost)} position'
+                   f'{plural(no_cost)} state{plural(no_cost, "", "s")} no cost '
+                   f'basis ({", ".join(r["ticker"] for r in no_cost)}), so '
+                   f'P&amp;L excludes {plural(no_cost, "them", "it")}.</p>')
+    if dropped:
+        out.append(f'<p class="note">{dropped} earlier snapshot'
+                   f'{"s are" if dropped > 1 else " is"} denominated in '
+                   f'another currency and {"are" if dropped > 1 else "is"} '
+                   f'left out of the value chart.</p>')
+    return out
+
+
 def main():
     snaps, by_ticker, names = load()
     if not snaps:
         raise SystemExit("no snapshots in history/ — run snapshot.py first")
     latest = snaps[-1]
+    # Refuse to blend vintages rather than render a plausible hybrid. The
+    # value-over-time chart still spans earlier snapshots, since a total from a
+    # portfolio you no longer hold is a fact about that day, not about this one
+    # - but only those denominated in the same currency as this one.
+    gone, added, changed = mismatch(latest, by_ticker)
+    if gone or added or changed:
+        raise SystemExit(_stale(latest, gone, added, changed))
+    series = comparable(snaps)
+    dropped = len(snaps) - len(series)
     rows = positions(latest, by_ticker, names)
     total = latest["total_value"]
     priced = [r for r in rows if r["pnl"] is not None]
@@ -257,32 +438,37 @@ def main():
     pnl = sum(r["pnl"] for r in priced) if priced else None
     cost = sum(r["value"] - r["pnl"] for r in priced)
     unpriced = [r for r in rows if r.get("unpriced")]
-    no_cost = [r for r in rows if r["pnl"] is None and not r.get("unpriced")]
+    # Stating no cost basis and having one we cannot convert are different
+    # claims. Folding the second into the first told the reader the holding
+    # carries no cost, when what is missing is a rate.
+    no_rate = [r for r in rows if r.get("cost_unconverted")]
+    no_cost = [r for r in rows if r["pnl"] is None and not r.get("unpriced")
+               and not r.get("cost_unconverted")]
     top5 = sum(r["weight"] for r in rows[:5] if r["weight"] is not None)
+    notes = _notes(unpriced, no_rate, no_cost, dropped)
 
     OUT.write_text(TEMPLATE.format(
         generated=latest.get("taken_at", latest["date"]),
         days=len(snaps),
-        total=eur(total, 2),
-        day_eur=f'{latest["daily_change"]:+,.0f}'.replace(",", " "),
+        total=num(total, 2),
+        base=latest.get("base_currency", "EUR"),
+        day_base=f'{latest["daily_change"]:+,.0f}'.replace(",", " "),
         day_pct=f'{latest["daily_change_pct"]:+.2f}',
         day_cls="up" if latest["daily_change"] >= 0 else "dn",
         pnl=f'{pnl:+,.0f}'.replace(",", " ") if pnl is not None else "—",
-        pnl_sub=(f'{pnl/cost*100:+.1f}% on cost' if pnl is not None and cost
-                 else "no cost basis recorded"),
+        # Three different states, and the wrong one was the default. No
+        # position converted is not the same as no position stating a basis:
+        # the second is a fact about the holdings, the first about our rates,
+        # and saying the second contradicts the note directly below.
+        pnl_sub=((f'{pnl/cost*100:+.1f}% on cost'
+                  + (f' · excludes {len(no_rate)}' if no_rate else ''))
+                 if pnl is not None and cost
+                 else ("no rate for the cost basis" if no_rate
+                       else "no cost basis recorded")),
         pnl_cls="up" if (pnl or 0) >= 0 else "dn",
         n=len(rows), top5=f"{top5:.0f}",
-        caveat=((f'<p class="note"><b>{len(unpriced)} position'
-                 f'{"s" if len(unpriced)>1 else ""} could not be priced</b> '
-                 f'({", ".join(r["ticker"] for r in unpriced)}) and {"are" if len(unpriced)>1 else "is"} '
-                 f'excluded from the total, which is therefore understated.</p>')
-                if unpriced else "") + (f'<p class="note">{len(no_cost)} position'
-                f'{"s" if len(no_cost)>1 else ""} state'
-                f'{"" if len(no_cost)>1 else "s"} no cost basis '
-                f'({", ".join(r["ticker"] for r in no_cost)}), so '
-                f'P&amp;L excludes {"them" if len(no_cost)>1 else "it"}.</p>')
-               if no_cost else "",
-        chart=line_chart(snaps),
+        caveat="".join(notes),
+        chart=line_chart(series),
         donut=donut(rows),
         table=table(rows),
     ), encoding="utf-8")
@@ -380,10 +566,10 @@ th[title]{{cursor:help}}
 
 <div class="card tiles">
   <div class="tile"><div class="k">Total value</div>
-    <div class="v">{total}<span style="font-size:15px;color:var(--text-muted)"> EUR</span></div>
+    <div class="v">{total}<span style="font-size:15px;color:var(--text-muted)"> {base}</span></div>
     <div class="s">{n} positions · top 5 = {top5}%</div></div>
   <div class="tile"><div class="k">Today</div>
-    <div class="v {day_cls}">{day_pct}%</div><div class="s">{day_eur} EUR</div></div>
+    <div class="v {day_cls}">{day_pct}%</div><div class="s">{day_base} {base}</div></div>
   <div class="tile"><div class="k">Unrealised P&amp;L</div>
     <div class="v {pnl_cls}">{pnl}</div><div class="s">{pnl_sub}</div></div>
 </div>
@@ -408,7 +594,7 @@ document.querySelectorAll('.seg').forEach(s=>{{
   s.addEventListener('mousemove',e=>show(e,`<b>${{s.dataset.n}}</b> ${{s.dataset.p}}`));
   s.addEventListener('mouseleave',hide);}});
 document.querySelectorAll('.pt').forEach(p=>{{
-  p.addEventListener('mousemove',e=>show(e,`<b>${{p.dataset.d}}</b> ${{p.dataset.v}} EUR`));
+  p.addEventListener('mousemove',e=>show(e,`<b>${{p.dataset.d}}</b> ${{p.dataset.v}} {base}`));
   p.addEventListener('mouseleave',hide);}});
 </script></body></html>
 """

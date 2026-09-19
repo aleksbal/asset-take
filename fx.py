@@ -16,6 +16,8 @@ from datetime import date
 import pandas as pd
 import yfinance as yf
 
+from money import Converted
+
 HISTORY_PERIOD = "2y"
 
 _SPOT = {}
@@ -117,3 +119,19 @@ def convert(amount, currency, base, on=None):
         return None
     r = rate(currency, base, on=on)
     return None if r is None else amount * r
+
+
+def exchange(amount, base, on=None):
+    """`amount` (a `Money`) in `base` as a `Converted`, or None.
+
+    The conversion any caller should reach for. `convert` above returns a bare
+    float, which is how a rate of 1.0 came to be defaulted in seven places: a
+    number that has been converted looks exactly like one that has not. A
+    `Converted` carries the rate that produced it, so the difference is on the
+    record rather than in the caller's memory.
+    """
+    if amount is None or amount.amount is None:
+        return None
+    r = rate(amount.currency, base, on=on)
+    return None if r is None else Converted(original=amount, rate=r,
+                                            base=base, on=on)

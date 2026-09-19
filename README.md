@@ -144,8 +144,9 @@ London). Market data is keyed on this, which is why the mapping exists.
 **P&L** — profit and loss; here always *unrealized*: current value minus what
 you paid, on things you still hold.
 
-**avg_cost** — average price paid per share. **Cost basis** — total paid for a
-position (`avg_cost × quantity`).
+**avg_cost** — average price paid per share, in the currency the broker
+charged in, which is not always what the listing quotes in. **Cost basis** —
+total paid for a position (`avg_cost × quantity`).
 
 **Weight** — a position's share of total value. Weights drift as prices move.
 

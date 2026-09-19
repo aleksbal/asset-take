@@ -13,6 +13,7 @@ from pathlib import Path
 import adapters
 import canonical
 import paths
+import portfolio_monitor as pm
 import resolve as rz
 
 ROOT = Path(__file__).parent
@@ -30,6 +31,27 @@ def _de(x):
     if float(x) == int(float(x)):
         return str(int(float(x)))
     return repr(float(x)).replace(".", ",")
+
+
+POSITION_COLUMNS = ["ticker", "quantity", "currency", "avg_cost",
+                    "cost_currency", "quote_currency"]
+
+
+def position_row(holding, resolved):
+    """One positions.csv line for a resolved holding.
+
+    `currency` is the listing's, `cost_currency` the broker's. They are
+    separate columns because they are separate facts and need not agree.
+
+    A mismatch used to drop the cost basis entirely, on the reasoning that it
+    could not be compared against the wrong unit. It can: it converts. The
+    drop is what turned the listing's currency into a selection criterion,
+    which is how a listing with one day of history came to be chosen over one
+    with 251 and had to be corrected by hand.
+    """
+    return [resolved["ticker"], _de(holding.quantity), resolved["currency"],
+            _de(holding.avg_cost), holding.currency,
+            resolved.get("quote_currency", "")]
 
 
 def pick_file(arg):
@@ -64,9 +86,10 @@ def main():
     canonical.write(holdings, paths.HOLDINGS)
 
     cached = rz.load_map()
+    prefer = pm.load_config().prefer_quote_currency
     rows, resolved = {}, []
     for h in holdings:
-        row = rz.resolve(h, cached.get(h.isin))
+        row = rz.resolve(h, cached.get(h.isin), prefer_currency=prefer)
         rows[h.isin] = row
         if row["ticker"] and row["status"] in ("ok", "manual", "unverified"):
             resolved.append((h, row["ticker"]))
@@ -77,15 +100,9 @@ def main():
 
     with paths.POSITIONS.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["ticker", "quantity", "currency", "avg_cost", "quote_currency"])
-        for h, ticker in resolved:
-            cur = rows[h.isin]["currency"]
-            # avg_cost comes from the broker in ITS currency. If the chosen
-            # listing prices in another, the cost basis would be compared
-            # against the wrong unit, so drop it rather than report bad P&L.
-            cost = h.avg_cost if cur == h.currency else ""
-            w.writerow([ticker, _de(h.quantity), cur, _de(cost),
-                        rows[h.isin].get("quote_currency", "")])
+        w.writerow(POSITION_COLUMNS)
+        for h, _ in resolved:
+            w.writerow(position_row(h, rows[h.isin]))
 
     bad = [r for r in rows.values() if r["status"] not in ("ok", "manual", "unverified")]
     unverified = [r for r in rows.values() if r["status"] == "unverified"]

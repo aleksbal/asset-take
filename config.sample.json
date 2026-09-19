@@ -1,5 +1,6 @@
 {
   "base_currency": "EUR",
+  "prefer_quote_currency": false,
   "alerts": {
     "daily_change_threshold_pct": 5.0,
     "consecutive_days_threshold": 3,

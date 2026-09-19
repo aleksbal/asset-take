@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
+from money import Money
+
 # Minor unit -> (major currency, scale). GBP is deliberately absent: it is the
 # major unit, and scaling it divides genuine pound prices by a hundred.
 MINOR_UNITS = {"GBp": ("GBP", 0.01), "ZAc": ("ZAR", 0.01), "ILA": ("ILS", 0.01)}
@@ -56,6 +58,16 @@ class Quote:
         return cls(price=value, currency=currency, session=session,
                    settled=settled)
 
+    @property
+    def money(self):
+        """This price as an amount in its own currency."""
+        return Money(self.price, self.currency)
+
     def converted(self, base, fx, on=None):
-        """This price in `base`, or None where the rate is unavailable."""
-        return fx.convert(self.price, self.currency, base, on=on)
+        """This price in `base` as a `Converted`, or None without a rate.
+
+        A `Converted` rather than a float, for the same reason this class
+        exists at all: the rate that produced a number is part of what the
+        number means, and a reader who has only the float cannot recover it.
+        """
+        return fx.exchange(self.money, base, on=on)
