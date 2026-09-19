@@ -246,12 +246,57 @@ class TestCostInAnotherCurrency:
         row = dashboard.positions(snap, self.held(), {})[0]
         assert row["pnl"] is None and row["value"] == pytest.approx(87.0)
 
-    def test_an_older_snapshot_falls_back_to_the_holdings_currency(self):
-        """Snapshots written before positions carried a cost currency state
-        only the holding's, which is what they meant at the time."""
+    def test_a_cost_without_a_rate_is_not_reported_as_stating_none(self):
+        """Different claims: one is a fact about the holding, the other about
+        our data. Folding them together told the reader the wrong one."""
         snap = self.usd_listing()
-        del snap["positions"][0]["cost_currency"]
+        snap["positions"][0]["cost_currency"] = "XXX"
         row = dashboard.positions(snap, self.held(), {})[0]
+        assert row["cost_unconverted"] is True
+
+    def test_a_position_stating_no_cost_is_not_flagged_as_unconvertible(self):
+        row = dashboard.positions(self.usd_listing(), self.held(avg_cost=None),
+                                  {})[0]
+        assert row["pnl"] is None and row["cost_unconverted"] is False
+
+
+class TestLegacySnapshotCostCurrency:
+    """Snapshots written before positions carried a cost currency.
+
+    That writer emitted a cost basis only where the listing currency and the
+    holding currency agreed, and blanked it otherwise - so the position's own
+    `currency` is the denomination, recoverable from the snapshot itself.
+    Reading today's holding currency instead reinterprets an old number under
+    a denomination it never had.
+    """
+
+    def legacy(self, listing="USD"):
+        snap = snapshot(
+            total_value=87.0, fx_rates={"EUR": 1.0, "USD": 0.87},
+            positions=[{"ticker": "GE", "quantity": 1, "current_price": 100.0,
+                        "previous_close": 100.0, "currency": listing,
+                        "avg_cost": 80.0}])
+        return snap                      # no cost_currency key, as of that era
+
+    def held(self, currency="USD"):
+        return {"GE": Holding(isin="US3696043013", name="GE Aerospace",
+                              quantity=1, currency=currency, avg_cost=80.0)}
+
+    def test_the_cost_is_read_in_the_snapshots_own_currency(self):
+        """80 USD cost, 100 USD value, at 0.87: a 20 USD gain = 17.40 EUR."""
+        row = dashboard.positions(self.legacy(), self.held(), {})[0]
+        assert row["pnl"] == pytest.approx(17.4)
+
+    def test_a_later_holding_currency_change_does_not_reinterpret_it(self):
+        """`mismatch()` accepts this snapshot - quantity and the numeric cost
+        are unchanged - so the dashboard must not read the old 80 as EUR."""
+        row = dashboard.positions(self.legacy(), self.held("EUR"), {})[0]
+        assert row["pnl"] == pytest.approx(17.4)      # not 87 - 80 = 7
+
+    def test_a_stated_cost_currency_still_wins(self):
+        snap = self.legacy()
+        snap["positions"][0]["cost_currency"] = "EUR"
+        row = dashboard.positions(snap, self.held("EUR"), {})[0]
         assert row["pnl"] == pytest.approx(7.0)
 
 
@@ -569,3 +614,54 @@ class TestTrendUsesTheDisplayedPrice:
                               "currency": "EUR", "price_date": None}]
         dashboard.positions(snap, {}, {})
         assert seen["on"] == "2026-02-09"
+
+
+class TestIncompleteAggregate:
+    """A headline P&L that silently omits positions states the sum of the
+    rows that happened to convert as though it were the portfolio."""
+
+    def pair(self):
+        snap, held = matched(sap_cost=150.0, alv_cost=100.0)
+        snap["positions"][1]["cost_currency"] = "XXX"     # ALV.DE, no rate
+        held["ALV.DE"].currency = "XXX"
+        return snap, held
+
+    def _html(self, pair, tmp_path, monkeypatch):
+        snap, held = pair
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "load", lambda: ([snap], held, {}))
+        dashboard.main()
+        return (tmp_path / "out.html").read_text(encoding="utf-8")
+
+    def test_the_headline_says_it_excludes_something(self, tmp_path, monkeypatch):
+        html = self._html(self.pair(), tmp_path, monkeypatch)
+        assert "excludes 1" in html
+
+    def test_the_omitted_position_is_named_and_explained(
+            self, tmp_path, monkeypatch):
+        html = self._html(self.pair(), tmp_path, monkeypatch)
+        assert "no available rate" in html and "ALV.DE" in html
+
+    def test_it_is_not_called_a_missing_cost_basis(self, tmp_path, monkeypatch):
+        """The basis is stated; the rate is what is missing."""
+        html = self._html(self.pair(), tmp_path, monkeypatch)
+        assert "states no cost basis" not in html
+
+    def test_a_complete_portfolio_carries_no_such_note(
+            self, tmp_path, monkeypatch):
+        html = self._html(matched(sap_cost=150.0, alv_cost=100.0),
+                          tmp_path, monkeypatch)
+        assert "no available rate" not in html
+        assert "excludes" not in html
+
+    def test_an_unpriced_warning_survives_a_complete_cost_basis(
+            self, tmp_path, monkeypatch):
+        """The notes were chained as `A + B + C if no_cost else ""`, which
+        Python groups as `(A + B + C) if no_cost else ""`. A portfolio where
+        every position stated a cost basis therefore suppressed the rest -
+        including the one saying the total is understated, which is the last
+        warning that should ever go missing."""
+        snap, held = matched(sap_cost=150.0, alv_cost=100.0)
+        snap["positions"][1]["current_price"] = None      # ALV.DE unpriced
+        html = self._html((snap, held), tmp_path, monkeypatch)
+        assert "could not be priced" in html

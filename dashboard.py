@@ -165,16 +165,23 @@ def _converted(amount, currency, rates, base):
 
 
 def _cost_of(p, h, rates, base):
-    """A position's cost basis in `base`, or None where it states none.
+    """A position's cost basis in `base`, or None where it has none.
 
-    The currency comes from the snapshot where it records one and from the
-    holding otherwise - a snapshot written before positions carried their cost
-    currency states only the holding's, which is what it meant at the time.
+    Where the snapshot records a cost currency, that is the denomination.
+    Where it does not, the snapshot predates the column, and the position's
+    own listing currency is the recoverable one: the writer of that era
+    emitted a cost basis only when the two agreed, and blanked it otherwise.
+
+    Today's `h.currency` is not a safe substitute. A broker correction that
+    changes the holding currency without changing the quantity or the number
+    is accepted by `mismatch()` for exactly such a legacy snapshot, and would
+    then reinterpret an old cost under a denomination it never had - reporting
+    the rate between them as P&L.
     """
     if not (h and h.avg_cost):
         return None
     return _converted(h.quantity * h.avg_cost,
-                      p.get("cost_currency") or h.currency, rates, base)
+                      p.get("cost_currency") or p.get("currency"), rates, base)
 
 
 def positions(snap, by_ticker, names):
@@ -198,7 +205,7 @@ def positions(snap, by_ticker, names):
                 "ticker": p["ticker"], "qty": p["quantity"], "price": None,
                 "currency": p["currency"], "value": None, "weight": None,
                 "day_base": None, "day_pct": None, "pnl": None, "pnl_pct": None,
-                "unpriced": True, "trend": {},
+                "unpriced": True, "cost_unconverted": False, "trend": {},
             })
             continue
         previous = _converted(
@@ -219,6 +226,10 @@ def positions(snap, by_ticker, names):
             "pnl": (value - cost.amount) if cost and cost.amount else None,
             "pnl_pct": ((value / cost.amount - 1) * 100) if cost and cost.amount else None,
             "unpriced": False,
+            # States a cost basis, but its currency has no rate. Different
+            # from stating none, and the difference is what the reader needs:
+            # one is a fact about the holding, the other about our data.
+            "cost_unconverted": bool(h and h.avg_cost) and cost is None,
             # The series is in the listing's own currency, not the base, so
             # the unconverted price is the one that belongs beside it.
             # price_date names the session the quote settled in, so where
@@ -363,6 +374,47 @@ def table(rows):
     </tr></thead><tbody>{body}</tbody></table>"""
 
 
+def _notes(unpriced, no_rate, no_cost, dropped):
+    """Everything the figures above do not say for themselves.
+
+    Built as a list rather than a chain of conditional concatenations. The
+    chain read `A + B + C if no_cost else ""`, which Python groups as
+    `(A + B + C) if no_cost else ""` - so a portfolio where every position
+    stated a cost basis suppressed the others, including the one saying
+    positions could not be priced and the total is understated. Exactly the
+    warning that must never be the one to go missing.
+    """
+    def plural(rows, s="s", one=""):
+        return s if len(rows) > 1 else one
+
+    out = []
+    if unpriced:
+        out.append(f'<p class="note"><b>{len(unpriced)} position'
+                   f'{plural(unpriced)} could not be priced</b> '
+                   f'({", ".join(r["ticker"] for r in unpriced)}) and '
+                   f'{plural(unpriced, "are", "is")} excluded from the total, '
+                   f'which is therefore understated.</p>')
+    if no_rate:
+        out.append(f'<p class="note"><b>{len(no_rate)} position'
+                   f'{plural(no_rate)} state{plural(no_rate, "", "s")} a cost '
+                   f'basis in a currency with no available rate</b> '
+                   f'({", ".join(r["ticker"] for r in no_rate)}), so the '
+                   f'unrealised P&amp;L above excludes '
+                   f'{plural(no_rate, "them", "it")} and is understated by an '
+                   f'unknown amount.</p>')
+    if no_cost:
+        out.append(f'<p class="note">{len(no_cost)} position'
+                   f'{plural(no_cost)} state{plural(no_cost, "", "s")} no cost '
+                   f'basis ({", ".join(r["ticker"] for r in no_cost)}), so '
+                   f'P&amp;L excludes {plural(no_cost, "them", "it")}.</p>')
+    if dropped:
+        out.append(f'<p class="note">{dropped} earlier snapshot'
+                   f'{"s are" if dropped > 1 else " is"} denominated in '
+                   f'another currency and {"are" if dropped > 1 else "is"} '
+                   f'left out of the value chart.</p>')
+    return out
+
+
 def main():
     snaps, by_ticker, names = load()
     if not snaps:
@@ -385,8 +437,14 @@ def main():
     pnl = sum(r["pnl"] for r in priced) if priced else None
     cost = sum(r["value"] - r["pnl"] for r in priced)
     unpriced = [r for r in rows if r.get("unpriced")]
-    no_cost = [r for r in rows if r["pnl"] is None and not r.get("unpriced")]
+    # Stating no cost basis and having one we cannot convert are different
+    # claims. Folding the second into the first told the reader the holding
+    # carries no cost, when what is missing is a rate.
+    no_rate = [r for r in rows if r.get("cost_unconverted")]
+    no_cost = [r for r in rows if r["pnl"] is None and not r.get("unpriced")
+               and not r.get("cost_unconverted")]
     top5 = sum(r["weight"] for r in rows[:5] if r["weight"] is not None)
+    notes = _notes(unpriced, no_rate, no_cost, dropped)
 
     OUT.write_text(TEMPLATE.format(
         generated=latest.get("taken_at", latest["date"]),
@@ -397,24 +455,12 @@ def main():
         day_pct=f'{latest["daily_change_pct"]:+.2f}',
         day_cls="up" if latest["daily_change"] >= 0 else "dn",
         pnl=f'{pnl:+,.0f}'.replace(",", " ") if pnl is not None else "—",
-        pnl_sub=(f'{pnl/cost*100:+.1f}% on cost' if pnl is not None and cost
-                 else "no cost basis recorded"),
+        pnl_sub=((f'{pnl/cost*100:+.1f}% on cost'
+                  + (f' · excludes {len(no_rate)}' if no_rate else ''))
+                 if pnl is not None and cost else "no cost basis recorded"),
         pnl_cls="up" if (pnl or 0) >= 0 else "dn",
         n=len(rows), top5=f"{top5:.0f}",
-        caveat=((f'<p class="note">{dropped} earlier snapshot'
-                 f'{"s are" if dropped > 1 else " is"} denominated in another '
-                 f'currency and {"are" if dropped > 1 else "is"} left out of '
-                 f'the value chart.</p>') if dropped else "")
-        + ((f'<p class="note"><b>{len(unpriced)} position'
-                 f'{"s" if len(unpriced)>1 else ""} could not be priced</b> '
-                 f'({", ".join(r["ticker"] for r in unpriced)}) and {"are" if len(unpriced)>1 else "is"} '
-                 f'excluded from the total, which is therefore understated.</p>')
-                if unpriced else "") + (f'<p class="note">{len(no_cost)} position'
-                f'{"s" if len(no_cost)>1 else ""} state'
-                f'{"" if len(no_cost)>1 else "s"} no cost basis '
-                f'({", ".join(r["ticker"] for r in no_cost)}), so '
-                f'P&amp;L excludes {"them" if len(no_cost)>1 else "it"}.</p>')
-               if no_cost else "",
+        caveat="".join(notes),
         chart=line_chart(series),
         donut=donut(rows),
         table=table(rows),
