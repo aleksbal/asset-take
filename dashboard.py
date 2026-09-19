@@ -47,30 +47,58 @@ def mismatch(snap, by_ticker):
     a position valued at 300 shares against the cost of 640 reports a 44%
     loss that neither file states.
 
-    Ticker sets alone do not settle it. Buying more of something already held
-    leaves them equal while making every derived figure for that position
-    wrong, so quantities are compared too.
+    Ticker sets alone do not settle it, and neither do quantities. Everything
+    a row is built from must agree, because any one of them moving underneath
+    the snapshot produces the same kind of figure: a broker correction or a
+    sell-and-rebuy at the same size leaves the quantity equal while the cost
+    basis changes, and the P&L is then this snapshot's value against another
+    day's cost.
 
-    Returns (gone, added, moved) - empty when the two agree.
+    Returns (gone, added, changed) - all empty when the two agree.
     """
-    was = {p["ticker"]: p["quantity"] for p in snap["positions"]}
-    now = {t: h.quantity for t, h in by_ticker.items()}
-    gone = sorted(set(was) - set(now))
-    added = sorted(set(now) - set(was))
-    moved = sorted((t, was[t], now[t]) for t in set(was) & set(now)
-                   if not math.isclose(was[t], now[t], rel_tol=1e-9))
-    return gone, added, moved
+    was = {p["ticker"]: p for p in snap["positions"]}
+    gone = sorted(set(was) - set(by_ticker))
+    added = sorted(set(by_ticker) - set(was))
+    changed = []
+    for ticker in sorted(set(was) & set(by_ticker)):
+        p, h = was[ticker], by_ticker[ticker]
+        if not _agrees(p.get("quantity"), h.quantity):
+            changed.append(f"{ticker} quantity "
+                           f"{_shown(p.get('quantity'))} -> {_shown(h.quantity)}")
+        if not _agrees(p.get("avg_cost"), h.avg_cost):
+            changed.append(f"{ticker} cost "
+                           f"{_shown(p.get('avg_cost'))} -> {_shown(h.avg_cost)}")
+        # Only where the snapshot states one. A snapshot written before
+        # positions carried a cost currency is silent on it, which is not the
+        # same as disagreeing.
+        if p.get("cost_currency") and p["cost_currency"] != h.currency:
+            changed.append(f"{ticker} cost currency "
+                           f"{p['cost_currency']} -> {h.currency}")
+    return gone, added, changed
 
 
-def _stale(snap, gone, added, moved):
+def _agrees(a, b):
+    """Whether two optional numbers say the same thing.
+
+    Absent equals absent; absent never equals a number. A cost basis that
+    appeared or vanished is a change, not a rounding difference.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    return math.isclose(a, b, rel_tol=1e-9)
+
+
+def _shown(value):
+    return "—" if value is None else f"{value:g}"
+
+
+def _stale(snap, gone, added, changed):
     out = [f"holdings have changed since the last snapshot ({snap['date']}):"]
     if gone:
-        out.append(f"  no longer held:   {', '.join(gone)}")
+        out.append(f"  no longer held: {', '.join(gone)}")
     if added:
-        out.append(f"  newly held:       {', '.join(added)}")
-    if moved:
-        out.append("  quantity changed: " + ", ".join(
-            f"{t} {w:g} -> {n:g}" for t, w, n in moved))
+        out.append(f"  newly held:     {', '.join(added)}")
+    out += [f"  changed:        {c}" for c in changed]
     out += ["", "Run snapshot.py to value what you hold now. Rendering the old "
             "snapshot instead", "would meet its quantities with today's cost "
             "basis and report a P&L neither states."]
@@ -149,7 +177,7 @@ def positions(snap, by_ticker, names):
                 "name": names.get(p["ticker"]) or (h.name if h else p["ticker"]),
                 "ticker": p["ticker"], "qty": p["quantity"], "price": None,
                 "currency": p["currency"], "value": None, "weight": None,
-                "day_eur": None, "day_pct": None, "pnl": None, "pnl_pct": None,
+                "day_base": None, "day_pct": None, "pnl": None, "pnl_pct": None,
                 "unpriced": True, "trend": {},
             })
             continue
@@ -166,7 +194,7 @@ def positions(snap, by_ticker, names):
             "name": names.get(p["ticker"]) or (h.name if h else p["ticker"]),
             "ticker": p["ticker"], "qty": p["quantity"], "price": p["current_price"],
             "currency": p["currency"], "value": value, "weight": value / total * 100,
-            "day_eur": (value - prev) if prev is not None else None,
+            "day_base": (value - prev) if prev is not None else None,
             "day_pct": (value / prev - 1) * 100 if prev else 0,
             "pnl": (value - cost.amount) if cost and cost.amount else None,
             "pnl_pct": ((value / cost.amount - 1) * 100) if cost and cost.amount else None,
@@ -184,7 +212,7 @@ def positions(snap, by_ticker, names):
     return rows
 
 
-def eur(x, dp=0):
+def num(x, dp=0):
     return f"{x:,.{dp}f}".replace(",", " ")
 
 
@@ -210,11 +238,11 @@ def line_chart(snaps, w=760, h=220, pad=(16, 56, 28, 8)):
     area = path + f" L{coords[-1][0]:.1f},{top+ih} L{coords[0][0]:.1f},{top+ih} Z"
     grid = "".join(
         f'<line class="grid" x1="{left}" x2="{left+iw}" y1="{top+ih*i/3:.1f}" y2="{top+ih*i/3:.1f}"/>'
-        f'<text class="axis" x="{left+iw+6}" y="{top+ih*i/3+4:.1f}">{eur(hi-(hi-lo)*i/3)}</text>'
+        f'<text class="axis" x="{left+iw+6}" y="{top+ih*i/3+4:.1f}">{num(hi-(hi-lo)*i/3)}</text>'
         for i in range(4))
     dots = "".join(
         f'<circle class="pt" cx="{x:.1f}" cy="{y:.1f}" r="4" '
-        f'data-d="{pts[i][0]}" data-v="{eur(pts[i][1], 2)}"/>'
+        f'data-d="{pts[i][0]}" data-v="{num(pts[i][1], 2)}"/>'
         for i, (x, y) in enumerate(coords))
     first, last = pts[0][0], pts[-1][0]
     return f'''<svg viewBox="0 0 {w} {h}" class="chart" role="img"
@@ -223,7 +251,7 @@ def line_chart(snaps, w=760, h=220, pad=(16, 56, 28, 8)):
       <path class="area" d="{area}"/><path class="line" d="{path}"/>{dots}
       <text class="axis" x="{left}" y="{h-8}">{first}</text>
       <text class="axis end" x="{left+iw}" y="{h-8}">{last}</text>
-      <text class="lbl" x="{coords[-1][0]-6:.1f}" y="{coords[-1][1]-12:.1f}">{eur(pts[-1][1])}</text>
+      <text class="lbl" x="{coords[-1][0]-6:.1f}" y="{coords[-1][1]-12:.1f}">{num(pts[-1][1])}</text>
     </svg>'''
 
 
@@ -295,12 +323,12 @@ def _row_html(r):
     t = r.get("trend") or {}
     return (f'<tr><td class="nm" title="{r["name"]}">{r["name"]}<span class="tk">{r["ticker"]}</span></td>'
             f'<td class="n">{r["qty"]:g}</td>'
-            f'<td class="n">{eur(r["price"], 2)} {r["currency"]}</td>'
-            f'<td class="n">{eur(r["value"])}</td>'
+            f'<td class="n">{num(r["price"], 2)} {r["currency"]}</td>'
+            f'<td class="n">{num(r["value"])}</td>'
             f'<td class="n w"><span class="bar" style="--p:{r["weight"]:.1f}%"></span>{r["weight"]:.1f}%</td>'
             f'<td class="n {"up" if r["day_pct"]>=0 else "dn"}">{r["day_pct"]:+.2f}%</td>'
             f'<td class="n {"up" if (r["pnl"] or 0)>=0 else "dn"}">'
-            f'{(eur(r["pnl"]) + " (" + format(r["pnl_pct"], "+.1f") + "%)") if r["pnl"] is not None else "—"}</td>'
+            f'{(num(r["pnl"]) + " (" + format(r["pnl_pct"], "+.1f") + "%)") if r["pnl"] is not None else "—"}</td>'
             f'{_peak_cell(t)}{_ma_cell(t)}{_rsi_cell(t)}</tr>')
 
 
@@ -340,8 +368,9 @@ def main():
     OUT.write_text(TEMPLATE.format(
         generated=latest.get("taken_at", latest["date"]),
         days=len(snaps),
-        total=eur(total, 2),
-        day_eur=f'{latest["daily_change"]:+,.0f}'.replace(",", " "),
+        total=num(total, 2),
+        base=latest.get("base_currency", "EUR"),
+        day_base=f'{latest["daily_change"]:+,.0f}'.replace(",", " "),
         day_pct=f'{latest["daily_change_pct"]:+.2f}',
         day_cls="up" if latest["daily_change"] >= 0 else "dn",
         pnl=f'{pnl:+,.0f}'.replace(",", " ") if pnl is not None else "—",
@@ -457,10 +486,10 @@ th[title]{{cursor:help}}
 
 <div class="card tiles">
   <div class="tile"><div class="k">Total value</div>
-    <div class="v">{total}<span style="font-size:15px;color:var(--text-muted)"> EUR</span></div>
+    <div class="v">{total}<span style="font-size:15px;color:var(--text-muted)"> {base}</span></div>
     <div class="s">{n} positions · top 5 = {top5}%</div></div>
   <div class="tile"><div class="k">Today</div>
-    <div class="v {day_cls}">{day_pct}%</div><div class="s">{day_eur} EUR</div></div>
+    <div class="v {day_cls}">{day_pct}%</div><div class="s">{day_base} {base}</div></div>
   <div class="tile"><div class="k">Unrealised P&amp;L</div>
     <div class="v {pnl_cls}">{pnl}</div><div class="s">{pnl_sub}</div></div>
 </div>
@@ -485,7 +514,7 @@ document.querySelectorAll('.seg').forEach(s=>{{
   s.addEventListener('mousemove',e=>show(e,`<b>${{s.dataset.n}}</b> ${{s.dataset.p}}`));
   s.addEventListener('mouseleave',hide);}});
 document.querySelectorAll('.pt').forEach(p=>{{
-  p.addEventListener('mousemove',e=>show(e,`<b>${{p.dataset.d}}</b> ${{p.dataset.v}} EUR`));
+  p.addEventListener('mousemove',e=>show(e,`<b>${{p.dataset.d}}</b> ${{p.dataset.v}} {base}`));
   p.addEventListener('mouseleave',hide);}});
 </script></body></html>
 """

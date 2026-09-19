@@ -506,7 +506,10 @@ def generate_long_report(report: PortfolioReport) -> str:
     # Full Position Details
     lines.append("📋 POSITION DETAILS")
     lines.append("-" * 60)
-    lines.append(f"  {'Ticker':<10} {'Shares':>10} {'Price':>12} {'Value':>14} {'Daily %':>10}")
+    # The price is the listing's own, so it carries the listing's currency.
+    # 33 shares at an unlabelled 152.71 beside a value of EUR 4,386 reads as
+    # an arithmetic error rather than a conversion.
+    lines.append(f"  {'Ticker':<10} {'Shares':>10} {'Price':>14} {'Value':>14} {'Daily %':>10}")
     lines.append("  " + "-" * 56)
 
     # Sort positions by value
@@ -519,7 +522,8 @@ def generate_long_report(report: PortfolioReport) -> str:
     for pos in sorted_positions:
         value = _amount(value_of(pos, report.fx_rates, report.base_currency))
         daily_pct = ((pos.current_price - pos.previous_close) / pos.previous_close * 100) if pos.previous_close else 0
-        lines.append(f"  {pos.ticker:<10} {pos.quantity:>10.2f} {pos.current_price:>12.2f} {format_currency(value, report.base_currency):>14} {daily_pct:>+9.2f}%")
+        priced = f"{pos.current_price:,.2f} {pos.currency}"
+        lines.append(f"  {pos.ticker:<10} {pos.quantity:>10.2f} {priced:>14} {format_currency(value, report.base_currency):>14} {daily_pct:>+9.2f}%")
 
     lines.append("")
 
@@ -528,7 +532,11 @@ def generate_long_report(report: PortfolioReport) -> str:
     if positions_with_cost:
         lines.append("💰 UNREALIZED P&L")
         lines.append("-" * 60)
-        lines.append(f"  {'Ticker':<10} {'Avg Cost':>10} {'Current':>10} {'P&L':>14} {'P&L %':>10}")
+        # Per share, both converted to the base currency. Printing the raw
+        # avg_cost beside the raw price put two different currencies in
+        # adjacent columns with nothing to say so - SPCX showed a 152.71 EUR
+        # cost against a 152.71 USD price and invited the obvious comparison.
+        lines.append(f"  {'Ticker':<10} {'Avg Cost':>12} {'Current':>12} {'P&L':>14} {'P&L %':>10}")
         lines.append("  " + "-" * 56)
 
         total_unrealized = 0
@@ -543,10 +551,14 @@ def generate_long_report(report: PortfolioReport) -> str:
             pnl_base = value.amount - cost.amount
             pnl_pct = (value.amount / cost.amount - 1) * 100
             total_unrealized += pnl_base
-            lines.append(f"  {pos.ticker:<10} {pos.avg_cost:>10.2f} {pos.current_price:>10.2f} {format_currency(pnl_base, report.base_currency):>14} {pnl_pct:>+9.2f}%")
+            per_share_cost = format_currency(cost.amount / pos.quantity,
+                                             report.base_currency)
+            per_share_now = format_currency(value.amount / pos.quantity,
+                                            report.base_currency)
+            lines.append(f"  {pos.ticker:<10} {per_share_cost:>12} {per_share_now:>12} {format_currency(pnl_base, report.base_currency):>14} {pnl_pct:>+9.2f}%")
 
         lines.append("  " + "-" * 56)
-        lines.append(f"  {'TOTAL':<10} {'':<10} {'':<10} {format_currency(total_unrealized, report.base_currency):>14}")
+        lines.append(f"  {'TOTAL':<10} {'':<12} {'':<12} {format_currency(total_unrealized, report.base_currency):>14}")
         lines.append("")
 
     # FX Rates
@@ -671,13 +683,17 @@ def main():
     positions = load_portfolio(args.asset_take)
     print(f"   Found {len(positions)} positions")
 
-    # Get unique currencies
-    currencies = set(p.currency for p in positions)
-    print(f"💱 Currencies: {', '.join(currencies)}")
+    # Every currency a rate is needed for, cost bases included: a cost basis
+    # in a third currency would otherwise reach cost_of() without a rate and
+    # drop that position's P&L from the report in silence.
+    #
+    # Not bound to a local named `currencies` - that shadowed this helper.
+    wanted = currencies(positions)
+    print(f"💱 Currencies: {', '.join(sorted(wanted))}")
 
     # Fetch FX rates
     print("💱 Fetching FX rates...")
-    fx_rates = fetch_fx_rates(currencies, base_currency)
+    fx_rates = fetch_fx_rates(wanted, base_currency)
 
     # Fetch prices
     print("📈 Fetching stock prices...")

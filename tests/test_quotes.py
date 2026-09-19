@@ -217,3 +217,40 @@ class TestQuoteType:
         q = Quote.from_provider(100.0, "EUR")
         with pytest.raises(Exception):
             q.price = 1.0
+
+
+class TestCurrenciesNeeded:
+    """Every currency a rate is needed for, cost bases included.
+
+    The CLI built its rate set from listing currencies alone. A cost basis in
+    a third currency then reached cost_of() without a rate, and that
+    position's P&L dropped out of the report in silence - while snapshot.py,
+    which used the helper, handled the same positions correctly.
+    """
+
+    def test_includes_the_cost_currency(self):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="GE", quantity=1, currency="USD",
+                          cost_currency="EUR", avg_cost=100.0)
+        assert pm.currencies([pos]) == {"USD", "EUR"}
+
+    def test_a_third_currency_is_not_lost(self):
+        """Listing, cost and base can all differ."""
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="BATS.L", quantity=1, currency="GBP",
+                          cost_currency="CHF", avg_cost=100.0)
+        assert pm.currencies([pos]) == {"GBP", "CHF"}
+
+    def test_falls_back_to_the_position_currency(self):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR")
+        assert pm.currencies([pos]) == {"EUR"}
+
+    def test_a_cost_without_a_rate_yields_no_pnl_rather_than_a_wrong_one(self):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="GE", quantity=2, currency="USD",
+                          cost_currency="CHF", avg_cost=100.0,
+                          current_price=150.0)
+        rates = {"EUR": 1.0, "USD": 0.87}          # no CHF
+        assert pm.cost_of(pos, rates, "EUR") is None
+        assert pm.value_of(pos, rates, "EUR").amount == pytest.approx(261.0)
