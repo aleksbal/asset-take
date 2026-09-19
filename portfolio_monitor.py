@@ -64,6 +64,11 @@ class PortfolioReport:
     losers: list[tuple[Position, float]]
     alerts: list[str]
     timestamp: datetime
+    # Positions excluded from total_value because their listing currency had
+    # no rate. They are left unpriced rather than misvalued, so the total is
+    # understated - and a total that does not say so is a partial sum
+    # presented as the portfolio.
+    unvalued: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -362,6 +367,7 @@ def calculate_report(positions: list[Position], base_currency: str,
     total_value_previous = 0.0
     position_changes = []
     alerts = []
+    unvalued = []
 
     # Load historical data for consecutive day tracking
     history = {}
@@ -380,6 +386,7 @@ def calculate_report(positions: list[Position], base_currency: str,
         value = value_of(pos, fx_rates, base_currency)
         if value is None:
             pos.current_price = pos.previous_close = None
+            unvalued.append(pos.ticker)
             continue
         total_value += value.amount
 
@@ -445,7 +452,8 @@ def calculate_report(positions: list[Position], base_currency: str,
         gainers=gainers,
         losers=losers,
         alerts=alerts,
-        timestamp=datetime.now()
+        timestamp=datetime.now(),
+        unvalued=unvalued,
     )
 
 
@@ -478,9 +486,18 @@ def generate_long_report(report: PortfolioReport) -> str:
     lines.append("📈 PORTFOLIO SUMMARY")
     lines.append("-" * 40)
     change_emoji = "🟢" if report.daily_change >= 0 else "🔴"
-    lines.append(f"  Total Value:      {format_currency(report.total_value, report.base_currency)}")
+    incomplete = "*" if report.unvalued else ""
+    lines.append(f"  Total Value:      {format_currency(report.total_value, report.base_currency)}{incomplete}")
     lines.append(f"  Previous Close:   {format_currency(report.total_value_previous, report.base_currency)}")
     lines.append(f"  Daily Change:     {change_emoji} {format_currency(report.daily_change, report.base_currency)} ({report.daily_change_pct:+.2f}%)")
+    if report.unvalued:
+        # Position details filters on current_price, so these vanish from the
+        # table entirely. A reader who is not told cannot tell a smaller
+        # portfolio from an understated one.
+        lines.append(f"  * excludes {len(report.unvalued)} position"
+                     f"{'s' if len(report.unvalued) > 1 else ''} with no "
+                     f"exchange rate ({', '.join(report.unvalued)}); the "
+                     f"total is understated by an unknown amount.")
     lines.append("")
 
     # Top Gainers
@@ -601,8 +618,12 @@ def generate_short_report(report: PortfolioReport) -> str:
 
     lines.append(f"📊 *Portfolio {date_str}*")
     lines.append("")
-    lines.append(f"💼 {format_currency(report.total_value, report.base_currency)}")
+    lines.append(f"💼 {format_currency(report.total_value, report.base_currency)}"
+                 f"{'*' if report.unvalued else ''}")
     lines.append(f"{change_emoji} {report.daily_change_pct:+.2f}% ({format_currency(report.daily_change, report.base_currency)})")
+    if report.unvalued:
+        lines.append(f"*excl. {len(report.unvalued)} unpriced: "
+                     f"{', '.join(report.unvalued)}")
     lines.append("")
 
     # Alerts (abbreviated)

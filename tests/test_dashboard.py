@@ -665,3 +665,41 @@ class TestIncompleteAggregate:
         snap["positions"][1]["current_price"] = None      # ALV.DE unpriced
         html = self._html((snap, held), tmp_path, monkeypatch)
         assert "could not be priced" in html
+
+
+class TestNothingConverts:
+    """Every position states a cost basis and none of them converts.
+
+    `priced` is then empty and the headline fell through to "no cost basis
+    recorded" - contradicting the holdings, and contradicting the note
+    directly below it saying a rate is what is missing.
+    """
+
+    def pair(self):
+        snap, held = matched(sap_cost=150.0, alv_cost=100.0)
+        for p in snap["positions"]:
+            p["cost_currency"] = "XXX"
+        for h in held.values():
+            h.currency = "XXX"
+        return snap, held
+
+    def _html(self, pair, tmp_path, monkeypatch):
+        snap, held = pair
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "load", lambda: ([snap], held, {}))
+        dashboard.main()
+        return (tmp_path / "out.html").read_text(encoding="utf-8")
+
+    def test_the_headline_blames_the_rate_not_the_basis(
+            self, tmp_path, monkeypatch):
+        html = self._html(self.pair(), tmp_path, monkeypatch)
+        assert "no rate for the cost basis" in html
+
+    def test_it_does_not_claim_the_bases_are_absent(self, tmp_path, monkeypatch):
+        html = self._html(self.pair(), tmp_path, monkeypatch)
+        assert "no cost basis recorded" not in html
+
+    def test_a_portfolio_truly_without_costs_still_says_so(
+            self, tmp_path, monkeypatch):
+        html = self._html(matched(), tmp_path, monkeypatch)
+        assert "no cost basis recorded" in html

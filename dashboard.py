@@ -455,9 +455,15 @@ def main():
         day_pct=f'{latest["daily_change_pct"]:+.2f}',
         day_cls="up" if latest["daily_change"] >= 0 else "dn",
         pnl=f'{pnl:+,.0f}'.replace(",", " ") if pnl is not None else "—",
+        # Three different states, and the wrong one was the default. No
+        # position converted is not the same as no position stating a basis:
+        # the second is a fact about the holdings, the first about our rates,
+        # and saying the second contradicts the note directly below.
         pnl_sub=((f'{pnl/cost*100:+.1f}% on cost'
                   + (f' · excludes {len(no_rate)}' if no_rate else ''))
-                 if pnl is not None and cost else "no cost basis recorded"),
+                 if pnl is not None and cost
+                 else ("no rate for the cost basis" if no_rate
+                       else "no cost basis recorded")),
         pnl_cls="up" if (pnl or 0) >= 0 else "dn",
         n=len(rows), top5=f"{top5:.0f}",
         caveat="".join(notes),

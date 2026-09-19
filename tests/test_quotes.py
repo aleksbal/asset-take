@@ -291,3 +291,40 @@ class TestPartialPnlTotal:
         report = pm.calculate_report([pos], "EUR", {"EUR": 1.0}, pm.AlertConfig())
         body = pm.generate_long_report(report)
         assert "TOTAL*" not in body and "* excludes" not in body
+
+
+class TestPartialPortfolioTotal:
+    """A total that silently omits positions is a partial sum presented as
+    the portfolio. Position details filters on current_price, so an omitted
+    ticker vanishes from the table too - a reader who is not told cannot
+    distinguish a smaller portfolio from an understated one."""
+
+    def report(self):
+        import portfolio_monitor as pm
+        ok = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR",
+                         current_price=150.0, previous_close=150.0)
+        rateless = pm.Position(ticker="X.QQ", quantity=1, currency="XXX",
+                               current_price=150.0, previous_close=150.0)
+        return pm, pm.calculate_report([ok, rateless], "EUR", {"EUR": 1.0},
+                                       pm.AlertConfig())
+
+    def test_the_omitted_position_is_recorded(self):
+        pm, report = self.report()
+        assert report.unvalued == ["X.QQ"]
+
+    def test_the_long_report_marks_the_total(self):
+        pm, report = self.report()
+        body = pm.generate_long_report(report)
+        assert "no exchange rate" in body and "X.QQ" in body
+
+    def test_the_short_report_marks_the_total(self):
+        pm, report = self.report()
+        assert "excl. 1 unpriced" in pm.generate_short_report(report)
+
+    def test_a_complete_portfolio_is_not_marked(self):
+        import portfolio_monitor as pm
+        ok = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR",
+                         current_price=150.0, previous_close=150.0)
+        report = pm.calculate_report([ok], "EUR", {"EUR": 1.0}, pm.AlertConfig())
+        assert report.unvalued == []
+        assert "no exchange rate" not in pm.generate_long_report(report)
