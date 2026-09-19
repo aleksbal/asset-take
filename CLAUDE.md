@@ -49,21 +49,36 @@ unrealised P&L - an unknown result dressed as a certainty. Aggregate only over
 the contributing rows and render the summary as unavailable when there are
 none.
 
-`avg_cost` is denominated in the holding's own currency. The dashboard
-converts a position's value to the base currency, so it must convert the cost
-basis with it - subtracting an unconverted USD cost from a EUR value reports
-the exchange rate itself as a gain or loss. Both sides use the same rate, so
-what is shown is the local P&L expressed in the base currency; we hold no
-historical FX for the purchase date and do not pretend to.
+`avg_cost` is denominated in `cost_currency` - what the broker charged in -
+which need not be what the listing quotes in. Both sides of a P&L are
+converted, each on its own rate: subtracting an unconverted USD cost from a
+EUR value reports the exchange rate itself as a gain, and converting it at the
+*position's* rate does the same thing more quietly. What is shown is the local
+P&L expressed in the base currency; we hold no historical FX for the purchase
+date and do not pretend to.
+
+The dashboard values a snapshot but reads the cost basis from `holdings.csv`,
+so the two must describe the same portfolio. They part company whenever an
+import lands without a snapshot after it - the two are separate steps on
+purpose - and the hybrid does not look wrong: every figure renders, and a
+position valued on 300 shares against the cost of 640 reported a 44% loss
+neither file states. Sold positions fared worse: absent from the map they lost
+their name and their cost, and were reported as holdings stating no cost basis,
+which is a different claim from not being held. `mismatch()` compares the two
+before anything is rendered and the run refuses rather than blending vintages.
+It compares quantities, not just tickers - buying more of something already
+held leaves the ticker sets equal while making every derived figure for that
+position wrong, and that is the case that produced the 44%. The value-over-time
+chart still spans every snapshot: a total from a portfolio you no longer hold
+is a fact about that day, not a claim about this one.
 
 Ticker resolution compares prices converted, not raw. A listing quoted in
 another currency is the same instrument; requiring the currencies to match
 discarded the only candidate the provider offered for four holdings and is
 what made hand-pinning necessary. Conversion widens the search without
 weakening the check - the small-cap namesake that caused the original
-mismapping is still 93% out and still rejected. A candidate already in the
-holding's currency still wins where one exists, because converting introduces
-a rate we hold no history for.
+mismapping is still 93% out and still rejected. Which of the survivors wins is
+settled by history, not by currency - see below.
 
 A provider price enters through `Quote.from_provider`, which normalises to the
 major unit and records whether the session has closed. It returns None for an
@@ -144,9 +159,29 @@ own valuation, so a wrong ticker is caught automatically. This already caught
 a small-cap ETF being matched to its large-cap namesake. Never accept a
 mapping that deviates materially from the broker price.
 
-Prefer a listing whose currency matches the broker's cost basis, so P&L is
-computed in one unit. Where no such listing exists (a stock quoted only in USD
-against a EUR cost basis), `avg_cost` is written empty rather than wrong.
+A listing's currency is a property to carry, never a reason to choose it.
+Among candidates that verify, the one with the most usable price history wins;
+currency ranks below that and only when `prefer_quote_currency` is set.
+
+This was the other way round, and the chain it created is worth remembering
+because every link looked reasonable. A cost basis was dropped when the chosen
+listing quoted in another currency, on the reasoning that it could not be
+compared against the wrong unit. To avoid losing it, resolution preferred a
+currency match. So venue quality ranked below venue currency, and a Stuttgart
+listing carrying one day of history beat a New York one carrying 251 - it
+priced GE Aerospace to within 0.04% and could not chart it. The only remedy
+was a hand-written pin, which is the thing resolution exists to avoid.
+
+The fix is at the first link, not the last: a cost basis in another currency
+converts. `avg_cost` travels with `cost_currency` and is never dropped.
+
+`money.Converted` is what makes that safe. A converted amount used to be a
+bare float, so a number that had been converted was indistinguishable from
+one that had not - which is how a rate of 1.0 came to be defaulted in seven
+places, and how a USD cost basis came to be converted at the EUR rate. A
+`Converted` carries the original amount, the rate applied and the day that
+rate is from. Build one through `fx.exchange`; never multiply by a rate by
+hand, and never default a missing one.
 
 The two data sources are deliberately separate. Holdings live in
 `positions.csv` and are maintained by hand. Cash accounts come from FinTS.
@@ -157,7 +192,9 @@ the first successful login.
 
 ## positions.csv
 
-Columns: `ticker,quantity,currency,avg_cost`. The ticker must be the
+Columns: `ticker,quantity,currency,avg_cost,cost_currency,quote_currency`.
+`currency` is the listing's and `cost_currency` the broker's; they are separate
+columns because they are separate facts and need not agree. The ticker must be the
 exchange-suffixed Yahoo symbol (`IWDA.AS` Amsterdam, `VWCE.DE` Xetra), not an
 ISIN — the same fund on two exchanges has two tickers and two prices. Mapping
 ISIN to ticker is a manual step; there is no lookup.
@@ -172,6 +209,18 @@ enter version control. Paths come from `paths.py`; never hardcode one.
 `positions.csv` is **generated** by `import_holdings.py`. Hand edits are
 overwritten; corrections belong in `isin_map.csv`, where `status=manual`
 pins an entry against re-resolution.
+
+A pin is a last resort, not a workflow. Needing one means resolution chose
+badly, and the holder cannot know in advance which holdings will need it -
+which makes the pin a defect report, not a fix. The four that existed were all
+symptoms of currency outranking history; none survived that being corrected.
+Reach for `isin_map.csv` when the provider offers nothing usable, and fix the
+ranking when it offers something usable and we picked wrong.
+
+Settings live in `data/config.json` (`paths.CONFIG`), read by
+`portfolio_monitor.load_config`, which returns a `Settings`. It used to return
+a widening tuple and to read a file only when the CLI passed one, so
+`snapshot.py` silently got the defaults on every run.
 
 ## history/
 

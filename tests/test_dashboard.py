@@ -26,6 +26,36 @@ def snapshot(**kw):
     return base
 
 
+def holdings(sap_cost=None, alv_cost=None):
+    """The holdings the default snapshot was taken from.
+
+    A test about missing cost data must still hold the same positions: the
+    dashboard refuses to render a snapshot against a different portfolio, and
+    an empty map states "no longer held", which is a different claim from
+    "held, but states no cost".
+    """
+    return {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
+                              currency="EUR", avg_cost=sap_cost),
+            "ALV.DE": Holding(isin="DE0008404005", name="Allianz SE", quantity=1,
+                              currency="EUR", avg_cost=alv_cost)}
+
+
+def matched(sap_cost=None, alv_cost=None):
+    """A snapshot and the holdings it was taken from, agreeing on everything.
+
+    The dashboard refuses a snapshot that disagrees with holdings on any field
+    it renders, cost basis included. A test about cost data must therefore
+    state the same cost on both sides - stating it on one was the mixed
+    vintage the guard exists to catch.
+    """
+    snap = snapshot(positions=[
+        {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
+         "previous_close": 198.0, "currency": "EUR", "avg_cost": sap_cost},
+        {"ticker": "ALV.DE", "quantity": 1, "current_price": 200.0,
+         "previous_close": 198.0, "currency": "EUR", "avg_cost": alv_cost}])
+    return snap, holdings(sap_cost, alv_cost)
+
+
 def test_computes_pnl_where_a_cost_basis_exists():
     by_ticker = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                                    currency="EUR", avg_cost=150.0)}
@@ -118,23 +148,22 @@ class TestUnknownPortfolioPnl:
     in a file without a cost-basis column lands here, so the headline figure
     would otherwise read `+0 EUR` for an entire portfolio."""
 
-    def _html(self, by_ticker, tmp_path, monkeypatch):
+    def _html(self, pair, tmp_path, monkeypatch):
+        snap, by_ticker = pair
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
         monkeypatch.setattr(dashboard, "load",
-                            lambda: ([snapshot()], by_ticker, {}))
+                            lambda: ([snap], by_ticker, {}))
         dashboard.main()
         return (tmp_path / "out.html").read_text(encoding="utf-8")
 
     def test_reports_unavailable_when_no_position_states_a_cost(
             self, tmp_path, monkeypatch):
-        html = self._html({}, tmp_path, monkeypatch)
+        html = self._html(matched(), tmp_path, monkeypatch)
         assert "no cost basis recorded" in html
         assert "+0" not in html.split("Unrealised")[1][:200]
 
     def test_reports_the_figure_when_a_cost_exists(self, tmp_path, monkeypatch):
-        by_ticker = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE",
-                                       quantity=4, currency="EUR", avg_cost=150.0)}
-        html = self._html(by_ticker, tmp_path, monkeypatch)
+        html = self._html(matched(sap_cost=150.0), tmp_path, monkeypatch)
         assert "on cost" in html
         assert "no cost basis recorded" not in html
 
@@ -171,11 +200,242 @@ class TestMissingCostNote:
 
     def test_note_reports_an_absent_cost_basis(self, tmp_path, monkeypatch):
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
-        monkeypatch.setattr(dashboard, "load", lambda: ([snapshot()], {}, {}))
+        snap, held = matched()
+        monkeypatch.setattr(dashboard, "load", lambda: ([snap], held, {}))
         dashboard.main()
         html = (tmp_path / "out.html").read_text(encoding="utf-8")
         assert "no cost basis" in html
         assert "another currency" not in html
+
+
+class TestCostInAnotherCurrency:
+    """A cost basis need not share the listing's currency any more.
+
+    It used to be dropped on a mismatch, which is why the dashboard never met
+    this case. The conversion it did have fell back to the *position's* rate
+    where the holding's currency was absent - a USD cost converted at the EUR
+    rate, reported as P&L.
+    """
+
+    def usd_listing(self):
+        """A EUR cost basis against a listing quoted in USD."""
+        return snapshot(
+            total_value=87.0, fx_rates={"EUR": 1.0, "USD": 0.87},
+            positions=[{"ticker": "GE", "quantity": 1, "current_price": 100.0,
+                        "previous_close": 100.0, "currency": "USD",
+                        "cost_currency": "EUR"}])
+
+    def held(self, avg_cost=80.0):
+        return {"GE": Holding(isin="US3696043013", name="GE Aerospace",
+                              quantity=1, currency="EUR", avg_cost=avg_cost)}
+
+    def test_the_cost_is_converted_on_its_own_rate(self):
+        """80 EUR cost, 100 USD value = 87 EUR. A 7 EUR gain, not a 13 loss."""
+        row = dashboard.positions(self.usd_listing(), self.held(), {})[0]
+        assert row["pnl"] == pytest.approx(7.0)
+
+    def test_the_position_is_still_valued_in_the_base_currency(self):
+        row = dashboard.positions(self.usd_listing(), self.held(), {})[0]
+        assert row["value"] == pytest.approx(87.0)
+
+    def test_a_cost_currency_without_a_rate_yields_no_pnl(self):
+        """Not a P&L computed at the position's rate, which is a different
+        number wearing the right shape."""
+        snap = self.usd_listing()
+        snap["positions"][0]["cost_currency"] = "XXX"
+        row = dashboard.positions(snap, self.held(), {})[0]
+        assert row["pnl"] is None and row["value"] == pytest.approx(87.0)
+
+    def test_an_older_snapshot_falls_back_to_the_holdings_currency(self):
+        """Snapshots written before positions carried a cost currency state
+        only the holding's, which is what they meant at the time."""
+        snap = self.usd_listing()
+        del snap["positions"][0]["cost_currency"]
+        row = dashboard.positions(snap, self.held(), {})[0]
+        assert row["pnl"] == pytest.approx(7.0)
+
+
+class TestBaseCurrencyLabels:
+    """The base currency is configurable, so it cannot be a literal.
+
+    `snapshot.py` used to pass None to load_config and always got EUR, which
+    made the hardcoded labels correct by accident. Reading data/config.json
+    made the setting reachable and the labels wrong.
+    """
+
+    def _html(self, base, tmp_path, monkeypatch):
+        snap, held = matched(sap_cost=150.0)
+        snap["base_currency"] = base
+        snap["fx_rates"] = {base: 1.0, "EUR": 1.0}
+        for p in snap["positions"]:
+            p["currency"] = base
+        for h in held.values():
+            h.currency = base
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "load", lambda: ([snap], held, {}))
+        dashboard.main()
+        return (tmp_path / "out.html").read_text(encoding="utf-8")
+
+    def test_the_total_is_labelled_in_the_snapshots_currency(
+            self, tmp_path, monkeypatch):
+        html = self._html("USD", tmp_path, monkeypatch)
+        assert "> USD</span>" in html
+
+    def test_no_eur_label_survives_a_usd_snapshot(self, tmp_path, monkeypatch):
+        """Every label, not just the headline - the daily change and the
+        chart tooltip carried their own copy of the literal."""
+        html = self._html("USD", tmp_path, monkeypatch)
+        assert "EUR" not in html
+
+    def test_a_eur_snapshot_still_says_eur(self, tmp_path, monkeypatch):
+        assert "> EUR</span>" in self._html("EUR", tmp_path, monkeypatch)
+
+
+class TestMixedBaseCurrencies:
+    """Totals are stored in whatever base produced them.
+
+    Changing `base_currency` makes every earlier total a different quantity.
+    Plotting them in one series draws the switch as a gain and labels the old
+    points with the new currency.
+    """
+
+    def snap(self, day, base, total):
+        s = snapshot(date=day, base_currency=base, total_value=total)
+        s["fx_rates"] = {base: 1.0}
+        return s
+
+    def test_a_single_base_keeps_every_snapshot(self):
+        snaps = [self.snap("2026-09-17", "EUR", 100.0),
+                 self.snap("2026-09-18", "EUR", 110.0)]
+        assert dashboard.comparable(snaps) == snaps
+
+    def test_earlier_snapshots_in_another_base_are_dropped(self):
+        snaps = [self.snap("2026-09-17", "EUR", 100.0),
+                 self.snap("2026-09-18", "USD", 118.0)]
+        kept = dashboard.comparable(snaps)
+        assert [s["date"] for s in kept] == ["2026-09-18"]
+
+    def test_a_base_that_changed_and_changed_back_is_not_spliced(self):
+        """Every-match would join two EUR runs across the USD gap between
+        them and draw a line through a discontinuity."""
+        snaps = [self.snap("2026-09-16", "EUR", 100.0),
+                 self.snap("2026-09-17", "USD", 118.0),
+                 self.snap("2026-09-18", "EUR", 102.0)]
+        assert [s["date"] for s in dashboard.comparable(snaps)] == ["2026-09-18"]
+
+    def test_a_snapshot_silent_on_its_base_is_read_as_eur(self):
+        old = snapshot(date="2026-09-17", total_value=100.0)
+        del old["base_currency"]
+        snaps = [old, self.snap("2026-09-18", "EUR", 110.0)]
+        assert len(dashboard.comparable(snaps)) == 2
+
+    def test_the_dashboard_says_what_it_left_out(self, tmp_path, monkeypatch):
+        snap, held = matched(sap_cost=150.0)
+        older = snapshot(date="2026-09-17", base_currency="USD", total_value=99.0)
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "load", lambda: ([older, snap], held, {}))
+        dashboard.main()
+        html = (tmp_path / "out.html").read_text(encoding="utf-8")
+        assert "denominated in another currency" in html
+
+
+class TestStaleSnapshot:
+    """The dashboard values a snapshot but reads the cost basis from holdings.
+    Where the two describe different portfolios, every figure still renders
+    and none of them is right - so it must refuse rather than blend them.
+
+    This is what an import without a snapshot after it produced: a position
+    valued on 300 shares against the cost of 640 reported a 44% loss, and
+    positions sold the day before were reported as holdings lacking cost data.
+    """
+
+    def test_agrees_where_the_snapshot_matches(self):
+        assert dashboard.mismatch(snapshot(), holdings()) == ([], [], [])
+
+    def test_reports_a_position_no_longer_held(self):
+        held = holdings()
+        del held["ALV.DE"]
+        gone, added, changed = dashboard.mismatch(snapshot(), held)
+        assert gone == ["ALV.DE"] and not added and not changed
+
+    def test_reports_a_newly_held_position(self):
+        held = holdings()
+        held["RHM.DE"] = Holding(isin="DE0007030009", name="Rheinmetall AG",
+                                 quantity=19, currency="EUR", avg_cost=564.28)
+        gone, added, changed = dashboard.mismatch(snapshot(), held)
+        assert added == ["RHM.DE"] and not gone and not changed
+
+    def test_catches_a_quantity_change_the_tickers_hide(self):
+        """Buying more of something already held leaves the ticker sets equal
+        while making every derived figure for that position wrong."""
+        held = holdings()
+        held["SAP.DE"].quantity = 9
+        gone, added, changed = dashboard.mismatch(snapshot(), held)
+        assert changed == ["SAP.DE quantity 4 -> 9"] and not gone and not added
+
+    def test_catches_a_cost_change_the_quantities_hide(self):
+        """A broker correction, or a sell-and-rebuy at the same size.
+
+        Quantity is unchanged, so a check on quantities alone accepts the
+        snapshot and then values it against a cost basis from another day -
+        the same hybrid, reached by a different route.
+        """
+        snap = snapshot(positions=[
+            {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
+             "previous_close": 198.0, "currency": "EUR", "avg_cost": 150.0}])
+        held = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
+                                  currency="EUR", avg_cost=175.0)}
+        gone, added, changed = dashboard.mismatch(snap, held)
+        assert changed == ["SAP.DE cost 150 -> 175"] and not gone and not added
+
+    def test_catches_a_cost_basis_that_appeared(self):
+        """Absent and present are different claims, not a rounding difference."""
+        snap = snapshot(positions=[
+            {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
+             "previous_close": 198.0, "currency": "EUR", "avg_cost": None}])
+        held = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
+                                  currency="EUR", avg_cost=150.0)}
+        assert dashboard.mismatch(snap, held)[2] == ["SAP.DE cost — -> 150"]
+
+    def test_catches_a_cost_currency_change(self):
+        """Re-resolving to a listing in another currency moves the unit the
+        cost basis is stated in, while every number stays the same."""
+        snap = snapshot(positions=[
+            {"ticker": "GE", "quantity": 4, "current_price": 200.0,
+             "previous_close": 198.0, "currency": "USD", "avg_cost": 150.0,
+             "cost_currency": "USD"}])
+        held = {"GE": Holding(isin="US3696043013", name="GE Aerospace", quantity=4,
+                              currency="EUR", avg_cost=150.0)}
+        assert dashboard.mismatch(snap, held)[2] == ["GE cost currency USD -> EUR"]
+
+    def test_a_snapshot_silent_on_cost_currency_is_not_a_change(self):
+        """Snapshots written before positions carried one say nothing about
+        it, which is not the same as disagreeing."""
+        snap = snapshot(positions=[
+            {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
+             "previous_close": 198.0, "currency": "EUR", "avg_cost": 150.0}])
+        held = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
+                                  currency="EUR", avg_cost=150.0)}
+        assert dashboard.mismatch(snap, held) == ([], [], [])
+
+    def test_main_refuses_rather_than_rendering_a_hybrid(
+            self, tmp_path, monkeypatch):
+        out = tmp_path / "out.html"
+        monkeypatch.setattr(dashboard, "OUT", out)
+        monkeypatch.setattr(dashboard, "load",
+                            lambda: ([snapshot()], {}, {}))
+        with pytest.raises(SystemExit) as e:
+            dashboard.main()
+        assert "snapshot.py" in str(e.value)
+        assert not out.exists()          # nothing written, not even a partial
+
+    def test_the_refusal_names_what_changed(self):
+        held = holdings()
+        held["SAP.DE"].quantity = 9
+        del held["ALV.DE"]
+        msg = dashboard._stale(snapshot(), *dashboard.mismatch(snapshot(), held))
+        assert "ALV.DE" in msg and "SAP.DE quantity 4 -> 9" in msg
+        assert "2026-09-18" in msg       # which snapshot is the stale one
 
 
 class TestTrendColumns:

@@ -190,10 +190,104 @@ class TestQuoteType:
         monkeypatch.setattr(fx, "rate", lambda c, b, on=None: 1.16)
         q = Quote.from_provider(4208.0, "GBp", session=date(2026, 9, 17),
                                 today=self.TODAY)
-        assert q.converted("EUR", fx) == pytest.approx(42.08 * 1.16)
+        assert q.converted("EUR", fx).amount == pytest.approx(42.08 * 1.16)
+
+    def test_a_conversion_keeps_the_rate_and_what_it_started_from(
+            self, monkeypatch):
+        """The pence price, the rate and the result are all recoverable.
+
+        A bare float cannot say whether a rate was applied, which is how 1.0
+        came to be defaulted in seven places.
+        """
+        import fx
+        monkeypatch.setattr(fx, "rate", lambda c, b, on=None: 1.16)
+        c = Quote.from_provider(4208.0, "GBp").converted("EUR", fx)
+        assert c.original.amount == 42.08      # already the major unit
+        assert c.original.currency == "GBP"
+        assert c.rate == 1.16
+        assert c.base == "EUR"
+
+    def test_a_quote_without_a_rate_does_not_convert(self, monkeypatch):
+        import fx
+        monkeypatch.setattr(fx, "rate", lambda c, b, on=None: None)
+        assert Quote.from_provider(100.0, "EUR").converted("XXX", fx) is None
 
     def test_a_quote_is_immutable(self):
         """The unit travels with the price; neither can drift from the other."""
         q = Quote.from_provider(100.0, "EUR")
         with pytest.raises(Exception):
             q.price = 1.0
+
+
+class TestCurrenciesNeeded:
+    """Every currency a rate is needed for, cost bases included.
+
+    The CLI built its rate set from listing currencies alone. A cost basis in
+    a third currency then reached cost_of() without a rate, and that
+    position's P&L dropped out of the report in silence - while snapshot.py,
+    which used the helper, handled the same positions correctly.
+    """
+
+    def test_includes_the_cost_currency(self):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="GE", quantity=1, currency="USD",
+                          cost_currency="EUR", avg_cost=100.0)
+        assert pm.currencies([pos]) == {"USD", "EUR"}
+
+    def test_a_third_currency_is_not_lost(self):
+        """Listing, cost and base can all differ."""
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="BATS.L", quantity=1, currency="GBP",
+                          cost_currency="CHF", avg_cost=100.0)
+        assert pm.currencies([pos]) == {"GBP", "CHF"}
+
+    def test_falls_back_to_the_position_currency(self):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR")
+        assert pm.currencies([pos]) == {"EUR"}
+
+    def test_a_cost_without_a_rate_yields_no_pnl_rather_than_a_wrong_one(self):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="GE", quantity=2, currency="USD",
+                          cost_currency="CHF", avg_cost=100.0,
+                          current_price=150.0)
+        rates = {"EUR": 1.0, "USD": 0.87}          # no CHF
+        assert pm.cost_of(pos, rates, "EUR") is None
+        assert pm.value_of(pos, rates, "EUR").amount == pytest.approx(261.0)
+
+
+class TestPartialPnlTotal:
+    """A total that silently excludes positions states a sum of the rows that
+    happened to work as though it were the portfolio. fetch_fx_rates omits a
+    pair it cannot price rather than inventing 1.0, so this is reachable even
+    after every currency has been requested."""
+
+    def report(self):
+        import portfolio_monitor as pm
+        priced = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR",
+                             cost_currency="EUR", avg_cost=100.0,
+                             current_price=150.0, previous_close=150.0)
+        rateless = pm.Position(ticker="GE", quantity=1, currency="EUR",
+                               cost_currency="CHF", avg_cost=100.0,
+                               current_price=150.0, previous_close=150.0)
+        return pm, pm.calculate_report([priced, rateless], "EUR", {"EUR": 1.0},
+                                       pm.AlertConfig())
+
+    def test_the_total_is_marked_incomplete(self):
+        pm, report = self.report()
+        body = pm.generate_long_report(report)
+        assert "TOTAL*" in body
+
+    def test_the_omitted_position_is_named(self):
+        pm, report = self.report()
+        body = pm.generate_long_report(report)
+        assert "GE" in body.split("* excludes")[1]
+
+    def test_a_complete_total_is_not_marked(self):
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR",
+                          cost_currency="EUR", avg_cost=100.0,
+                          current_price=150.0, previous_close=150.0)
+        report = pm.calculate_report([pos], "EUR", {"EUR": 1.0}, pm.AlertConfig())
+        body = pm.generate_long_report(report)
+        assert "TOTAL*" not in body and "* excludes" not in body

@@ -96,12 +96,34 @@ def test_a_listing_whose_rate_is_unavailable_is_skipped(market):
     assert rz.resolve(holding())["status"] == "unresolved"
 
 
-def test_prefers_currency_match_over_price_proximity(market):
+def test_an_exact_foreign_listing_beats_a_near_domestic_one(market):
+    """Currency no longer ranks above anything.
+
+    It used to come first, which is how a one-day listing beat a 251-day one.
+    With equal history the price decides, and a listing that converts exactly
+    is the better match whatever it quotes in.
+
+    Note the USD price is the broker's figure *divided by the rate*: an
+    earlier version of this test used the broker's number as a dollar price,
+    so the candidate converted 13% out and was rejected at the tolerance gate.
+    The tiebreak it claimed to exercise was never reached.
+    """
     market(["NVDA", "NVD.DE"], {
-        "NVDA": (190.64, "USD"),   # exact, wrong currency
-        "NVD.DE": (191.00, "EUR"),  # slightly off, right currency
-    })
+        "NVDA": (219.13, "USD"),    # 190.64 EUR once converted - exact
+        "NVD.DE": (191.00, "EUR"),  # slightly off
+    }, history={"NVDA": 505, "NVD.DE": 505})
     row = rz.resolve(holding(isin="US67066G1040", broker_price=190.64))
+    assert row["ticker"] == "NVDA"
+
+
+def test_the_currency_preference_restores_the_domestic_listing(market):
+    """Opting in puts the holding's own currency back above price proximity."""
+    market(["NVDA", "NVD.DE"], {
+        "NVDA": (219.13, "USD"),
+        "NVD.DE": (191.00, "EUR"),
+    }, history={"NVDA": 505, "NVD.DE": 505})
+    row = rz.resolve(holding(isin="US67066G1040", broker_price=190.64),
+                     prefer_currency=True)
     assert row["ticker"] == "NVD.DE"
 
 
@@ -225,11 +247,30 @@ class TestHistoryBreaksAPriceTie:
                history={"RIGHT.DE": 1, "WRONG.DE": 505})
         assert rz.resolve(holding())["ticker"] == "RIGHT.DE"
 
-    def test_currency_still_gates_before_depth(self, market):
+    def test_depth_outranks_currency(self, market):
+        """The GE Aerospace case.
+
+        A euro listing carrying one day of history beat a dollar one carrying
+        251. It priced the position correctly and could not chart it, and the
+        only remedy was a hand-written pin - which is the thing resolution
+        exists to avoid.
+        """
         market(["DEEP.US", "SHALLOW.DE"],
-               {"DEEP.US": (127.41, "USD"), "SHALLOW.DE": (127.40, "EUR")},
+               {"DEEP.US": (146.46, "USD"),     # 127.42 EUR once converted
+                "SHALLOW.DE": (127.40, "EUR")},
                history={"DEEP.US": 505, "SHALLOW.DE": 1})
-        assert rz.resolve(holding())["ticker"] == "SHALLOW.DE"
+        assert rz.resolve(holding())["ticker"] == "DEEP.US"
+
+    def test_the_currency_preference_does_not_rescue_a_stub(self, market):
+        """Opting in reorders currency against price, never against history.
+
+        A listing that cannot carry a trend is not made usable by quoting in
+        the right currency.
+        """
+        market(["DEEP.US", "SHALLOW.DE"],
+               {"DEEP.US": (146.46, "USD"), "SHALLOW.DE": (127.40, "EUR")},
+               history={"DEEP.US": 505, "SHALLOW.DE": 1})
+        assert rz.resolve(holding(), prefer_currency=True)["ticker"] == "DEEP.US"
 
     def test_equal_depth_falls_back_to_the_closer_price(self, market):
         market(["A.DE", "B.DE"],

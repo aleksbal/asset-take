@@ -19,8 +19,11 @@ spec.loader.exec_module(pm)
 
 positions_csv = sys.argv[1] if len(sys.argv) > 1 else paths.POSITIONS
 positions = pm.fetch_prices(pm.load_portfolio(str(positions_csv)))
-base, alerts = pm.load_config(None)
-fx = pm.fetch_fx_rates({p.currency for p in positions}, base)
+settings = pm.load_config()
+base, alerts = settings.base_currency, settings.alerts
+# Both the listings' currencies and the cost bases': they need not match any
+# more, and a cost basis without a rate is a P&L silently missing.
+fx = pm.fetch_fx_rates(pm.currencies(positions), base)
 report = pm.calculate_report(positions, base, fx, alerts)
 
 out = paths.HISTORY
