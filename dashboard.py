@@ -105,16 +105,32 @@ def _stale(snap, gone, added, changed):
     return "\n".join(out)
 
 
+def complete(snap):
+    """Whether every position in this snapshot was valued.
+
+    Derived rather than stored, so it holds for snapshots written before
+    anyone thought to ask: a position whose currency had no rate is left
+    unpriced by `calculate_report`, and the snapshot records that faithfully.
+    A stored flag would have needed a migration and a rule for what its
+    absence meant.
+    """
+    return all(p.get("current_price") is not None for p in snap["positions"])
+
+
 def comparable(snaps):
-    """The run of snapshots sharing the latest one's base currency.
+    """The snapshots that can share one line.
 
-    A total is stored in the base currency of the run that produced it.
-    Changing `base_currency` makes every earlier total a different quantity,
-    and plotting them in one series draws the switch as a gain - then labels
-    the old points with the new currency, which is the more serious half.
+    Two things disqualify a point. A different base currency: a total is
+    stored in the base that produced it, so plotting them together draws the
+    switch as a gain and then labels the old points with the new currency,
+    which is the more serious half. And an incomplete valuation: a snapshot
+    taken while a rate was down holds the sum of the positions that could be
+    valued, so a complete-partial-complete run draws a crash and a recovery
+    that never happened.
 
-    The longest suffix rather than every match: a base that changed and
-    changed back would otherwise splice two runs across the gap between them.
+    The longest suffix rather than every currency match: a base that changed
+    and changed back would otherwise splice two runs across the gap between
+    them.
     """
     base = snaps[-1].get("base_currency", "EUR")
     run = []
@@ -122,7 +138,7 @@ def comparable(snaps):
         if snap.get("base_currency", "EUR") != base:
             break
         run.append(snap)
-    return list(reversed(run))
+    return [s for s in reversed(run) if complete(s)]
 
 
 def trend(ticker, price=None, on=None):
@@ -410,9 +426,11 @@ def _notes(unpriced, no_rate, no_cost, dropped):
                    f'P&amp;L excludes {plural(no_cost, "them", "it")}.</p>')
     if dropped:
         out.append(f'<p class="note">{dropped} earlier snapshot'
-                   f'{"s are" if dropped > 1 else " is"} denominated in '
-                   f'another currency and {"are" if dropped > 1 else "is"} '
-                   f'left out of the value chart.</p>')
+                   f'{"s are" if dropped > 1 else " is"} left out of the '
+                   f'value chart, as {"they are" if dropped > 1 else "it is"} '
+                   f'either denominated in another currency or '
+                   f'{"were" if dropped > 1 else "was"} taken while a position '
+                   f'could not be valued.</p>')
     return out
 
 

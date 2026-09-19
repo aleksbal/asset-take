@@ -84,24 +84,6 @@ def _candidates(isin, name):
 
 
 def display_name(ticker):
-    """Yahoo's readable name. Broker exports carry abbreviated strings like
-    'SPACE EXPL.TECHS. CL.A', which are unusable as labels."""
-    try:
-        n = yf.Ticker(ticker).info.get("longName") or yf.Ticker(ticker).info.get("shortName")
-        return n.strip() if n else ""
-    except Exception:
-        return ""
-
-
-def fill_display_names(rows):
-    """Populate any missing display_name in-place. Cached: only fetches blanks."""
-    for r in rows.values():
-        if r.get("ticker") and not r.get("display_name"):
-            r["display_name"] = display_name(r["ticker"])
-    return rows
-
-
-def display_name(ticker):
     """The provider's own instrument name.
 
     Broker exports carry abbreviations forced by fixed-width fields
@@ -218,7 +200,26 @@ def _row(holding, ticker="", currency=None, price="", deviation="", status="unre
 
 
 def resolve(holding, existing=None, prefer_currency=None):
-    """Map one holding to a ticker.
+    """Map one holding to a ticker, keeping the name already established.
+
+    A display name belongs to the instrument, not to the listing. `_row()`
+    does not carry one, so every rebuilt row lost it and `fill_display_names`
+    refetched whatever the provider says about the new venue - which is how
+    GE Aerospace became "General Electric Company" when its row was rebuilt:
+    Yahoo's label for the German listing predates the Vernova spin-off.
+
+    Carrying it forward also makes a name corrected by hand in isin_map.csv
+    stick, which is the point of that file.
+    """
+    row = _resolve(holding, existing, prefer_currency)
+    name = ((existing or {}).get("display_name") or "").strip()
+    if name and not (row.get("display_name") or "").strip():
+        row["display_name"] = name
+    return row
+
+
+def _resolve(holding, existing=None, prefer_currency=None):
+    """Which listing this holding maps to.
 
     Where the source states a valuation, candidates are verified against it and
     the closest currency-matching one wins. Where it does not - a plain CSV

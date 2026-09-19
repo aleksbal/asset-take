@@ -231,6 +231,27 @@ be backfilled — a missed day is gone. Read several files, not just today's.
 Do not confuse it with `portfolio_monitor.py --history`, which is unrelated:
 that file tracks only consecutive-move direction for alerts.
 
+`bin/daily.sh` takes one day's snapshot and re-renders, and
+`bin/install-schedule.sh` puts it on launchd for weekdays. Weekdays because a
+weekend run stores Friday's closes under Saturday's date; the per-listing
+price series is already immune, since it records a close under the session it
+settled in, but the snapshot series dates itself by the run.
+
+A snapshot's completeness is derived, not stored: a position the run could not
+value is left unpriced, and the snapshot records that. `dashboard.complete()`
+reads it back, so it holds for snapshots written before anyone thought to ask
+- no stored flag, no migration, and no question about what its absence means.
+An incomplete snapshot holds the sum of the positions that could be valued, so
+it is kept out of the value chart: complete, partial, complete draws a crash
+and a recovery that never happened.
+
+A display name belongs to the instrument, not to the listing, so `resolve()`
+carries it across a change of ticker for the same ISIN. It used to be refetched
+whenever a row was rebuilt, which let the provider's label for the new venue
+overwrite it - GE Aerospace became "General Electric Company", Yahoo's name for
+the German listing, which predates the Vernova spin-off. Carrying it forward
+also makes a name corrected by hand in `isin_map.csv` stick.
+
 ## Credentials
 
 `fetch_ing.py` prompts for the Zugangsnummer and PIN at runtime and writes

@@ -703,3 +703,48 @@ class TestNothingConverts:
             self, tmp_path, monkeypatch):
         html = self._html(matched(), tmp_path, monkeypatch)
         assert "no cost basis recorded" in html
+
+
+class TestIncompleteSnapshotsLeaveTheChart:
+    """A snapshot taken while an FX rate was down holds the sum of the
+    positions that could be valued. Plotted beside complete ones it draws a
+    crash and a recovery that never happened."""
+
+    def snap(self, day, total, priced=True):
+        s = snapshot(date=day, total_value=total)
+        s["positions"] = [{"ticker": "SAP.DE", "quantity": 4, "currency": "EUR",
+                           "current_price": 200.0 if priced else None,
+                           "previous_close": 198.0}]
+        return s
+
+    def test_a_fully_priced_snapshot_is_complete(self):
+        assert dashboard.complete(self.snap("2026-09-18", 800.0))
+
+    def test_an_unpriced_position_makes_it_incomplete(self):
+        assert not dashboard.complete(self.snap("2026-09-18", 0.0, priced=False))
+
+    def test_the_partial_point_is_dropped_from_the_series(self):
+        snaps = [self.snap("2026-09-16", 800.0),
+                 self.snap("2026-09-17", 0.0, priced=False),
+                 self.snap("2026-09-18", 810.0)]
+        kept = [s["date"] for s in dashboard.comparable(snaps)]
+        assert kept == ["2026-09-16", "2026-09-18"]
+
+    def test_completeness_needs_no_stored_flag(self):
+        """Derived from the positions, so it holds for snapshots written
+        before anyone thought to ask - no migration, no absent-means-what."""
+        old = self.snap("2026-09-18", 800.0)
+        assert "complete" not in old and dashboard.complete(old)
+
+    def test_the_dashboard_says_it_left_something_out(
+            self, tmp_path, monkeypatch):
+        snap, held = matched(sap_cost=150.0, alv_cost=100.0)
+        partial = snapshot(date="2026-09-17", total_value=0.0)
+        partial["positions"] = [{"ticker": "SAP.DE", "quantity": 4,
+                                 "currency": "EUR", "current_price": None,
+                                 "previous_close": None}]
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "load", lambda: ([partial, snap], held, {}))
+        dashboard.main()
+        html = (tmp_path / "out.html").read_text(encoding="utf-8")
+        assert "left out of the value chart" in html
