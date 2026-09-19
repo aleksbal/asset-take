@@ -400,8 +400,9 @@ def _notes(unpriced, no_rate, no_cost, dropped):
                    f'basis in a currency with no available rate</b> '
                    f'({", ".join(r["ticker"] for r in no_rate)}), so the '
                    f'unrealised P&amp;L above excludes '
-                   f'{plural(no_rate, "them", "it")} and is understated by an '
-                   f'unknown amount.</p>')
+                   f'{plural(no_rate, "them", "it")}. A P&amp;L can be '
+                   f'negative, so {plural(no_rate, "they", "it")} could move '
+                   f'that figure either way.</p>')
     if no_cost:
         out.append(f'<p class="note">{len(no_cost)} position'
                    f'{plural(no_cost)} state{plural(no_cost, "", "s")} no cost '

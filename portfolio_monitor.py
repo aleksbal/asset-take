@@ -489,15 +489,17 @@ def generate_long_report(report: PortfolioReport) -> str:
     incomplete = "*" if report.unvalued else ""
     lines.append(f"  Total Value:      {format_currency(report.total_value, report.base_currency)}{incomplete}")
     lines.append(f"  Previous Close:   {format_currency(report.total_value_previous, report.base_currency)}")
-    lines.append(f"  Daily Change:     {change_emoji} {format_currency(report.daily_change, report.base_currency)} ({report.daily_change_pct:+.2f}%)")
+    lines.append(f"  Daily Change:     {change_emoji} {format_currency(report.daily_change, report.base_currency)} ({report.daily_change_pct:+.2f}%){incomplete}")
     if report.unvalued:
         # Position details filters on current_price, so these vanish from the
         # table entirely. A reader who is not told cannot tell a smaller
         # portfolio from an understated one.
         lines.append(f"  * excludes {len(report.unvalued)} position"
                      f"{'s' if len(report.unvalued) > 1 else ''} with no "
-                     f"exchange rate ({', '.join(report.unvalued)}); the "
-                     f"total is understated by an unknown amount.")
+                     f"exchange rate ({', '.join(report.unvalued)}). The total "
+                     f"is understated; the daily change describes only the "
+                     f"remaining holdings, so a large move in an omitted "
+                     f"position is not in it - nor in the drop alert.")
     lines.append("")
 
     # Top Gainers
@@ -584,10 +586,11 @@ def generate_long_report(report: PortfolioReport) -> str:
         label = "TOTAL*" if omitted else "TOTAL"
         lines.append(f"  {label:<10} {'':<12} {'':<12} {format_currency(total_unrealized, report.base_currency):>14}")
         if omitted:
-            lines.append(f"  * excludes {len(omitted)} position"
+            lines.append(f"  * incomplete: excludes {len(omitted)} position"
                          f"{'s' if len(omitted) > 1 else ''} with no exchange "
-                         f"rate for the cost basis ({', '.join(omitted)}), so "
-                         f"the total is understated by an unknown amount.")
+                         f"rate for the cost basis ({', '.join(omitted)}). A "
+                         f"P&L can be negative, so the omitted rows could move "
+                         f"this figure either way.")
         lines.append("")
 
     # FX Rates
@@ -620,7 +623,9 @@ def generate_short_report(report: PortfolioReport) -> str:
     lines.append("")
     lines.append(f"💼 {format_currency(report.total_value, report.base_currency)}"
                  f"{'*' if report.unvalued else ''}")
-    lines.append(f"{change_emoji} {report.daily_change_pct:+.2f}% ({format_currency(report.daily_change, report.base_currency)})")
+    lines.append(f"{change_emoji} {report.daily_change_pct:+.2f}% "
+                 f"({format_currency(report.daily_change, report.base_currency)})"
+                 f"{'*' if report.unvalued else ''}")
     if report.unvalued:
         lines.append(f"*excl. {len(report.unvalued)} unpriced: "
                      f"{', '.join(report.unvalued)}")

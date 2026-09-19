@@ -281,7 +281,7 @@ class TestPartialPnlTotal:
     def test_the_omitted_position_is_named(self):
         pm, report = self.report()
         body = pm.generate_long_report(report)
-        assert "GE" in body.split("* excludes")[1]
+        assert "GE" in body.split("* incomplete: excludes")[1]
 
     def test_a_complete_total_is_not_marked(self):
         import portfolio_monitor as pm
@@ -328,3 +328,38 @@ class TestPartialPortfolioTotal:
         report = pm.calculate_report([ok], "EUR", {"EUR": 1.0}, pm.AlertConfig())
         assert report.unvalued == []
         assert "no exchange rate" not in pm.generate_long_report(report)
+
+
+class TestDailyChangeCompleteness:
+    """The daily change is computed from the same exclusion as the total, so
+    marking only the total lets a large move in an omitted position be
+    presented as a complete figure."""
+
+    def report(self):
+        import portfolio_monitor as pm
+        ok = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR",
+                         current_price=150.0, previous_close=150.0)
+        rateless = pm.Position(ticker="X.QQ", quantity=1, currency="XXX",
+                               current_price=300.0, previous_close=100.0)
+        return pm, pm.calculate_report([ok, rateless], "EUR", {"EUR": 1.0},
+                                       pm.AlertConfig())
+
+    def test_the_daily_change_is_marked_too(self):
+        pm, report = self.report()
+        body = pm.generate_long_report(report)
+        line = next(l for l in body.split("\n") if "Daily Change" in l)
+        assert line.rstrip().endswith("*")
+
+    def test_the_note_says_the_daily_change_is_affected(self):
+        pm, report = self.report()
+        assert "daily change describes only the remaining" in \
+            pm.generate_long_report(report)
+
+    def test_a_complete_report_marks_neither(self):
+        import portfolio_monitor as pm
+        ok = pm.Position(ticker="ALV.DE", quantity=1, currency="EUR",
+                         current_price=150.0, previous_close=150.0)
+        report = pm.calculate_report([ok], "EUR", {"EUR": 1.0}, pm.AlertConfig())
+        body = pm.generate_long_report(report)
+        line = next(l for l in body.split("\n") if "Daily Change" in l)
+        assert not line.rstrip().endswith("*")
