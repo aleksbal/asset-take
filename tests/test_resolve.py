@@ -421,3 +421,49 @@ class TestQuoteUnitIsRecorded:
                                    "currency": "EUR", "quote_currency": "EUR"})
         assert row["quote_currency"] == "GBp"
         assert row["currency"] == "GBP"
+
+
+class TestDisplayNameSurvivesReresolution:
+    """A display name belongs to the instrument, not to the listing.
+
+    `_row()` carries none, so every rebuilt row lost it and the next
+    `fill_display_names` took whatever the provider says about the new venue.
+    GE Aerospace became "General Electric Company" that way - Yahoo's label
+    for the German listing predates the Vernova spin-off.
+    """
+
+    def pinned(self, **kw):
+        base = {"isin": "US3696043013", "ticker": "GCP.DE", "currency": "EUR",
+                "quote_currency": "EUR", "yahoo_price": 272.55,
+                "broker_price": 273.05, "deviation_pct": 0.18, "status": "ok",
+                "display_name": "GE Aerospace"}
+        base.update(kw)
+        return base
+
+    def test_a_kept_mapping_keeps_its_name(self, market):
+        market(["GCP.DE"], {"GCP.DE": (127.40, "EUR")}, history={"GCP.DE": 505})
+        row = rz.resolve(holding(), self.pinned())
+        assert row["display_name"] == "GE Aerospace"
+
+    def test_a_name_survives_the_ticker_changing(self, market):
+        """Same ISIN, different venue - still the same company."""
+        market(["GE"], {"GE": (127.40, "EUR")}, history={"GE": 505})
+        row = rz.resolve(holding(), self.pinned(ticker="THIN.SG",
+                                                yahoo_price=1.0))
+        assert row["ticker"] == "GE"
+        assert row["display_name"] == "GE Aerospace"
+
+    def test_a_pinned_row_keeps_its_name(self, market):
+        market(["GCP.DE"], {"GCP.DE": (127.40, "EUR")})
+        row = rz.resolve(holding(), self.pinned(status="manual"))
+        assert row["display_name"] == "GE Aerospace"
+
+    def test_a_first_resolution_states_no_name(self, market):
+        """Nothing to carry; fill_display_names fetches one afterwards."""
+        market(["GCP.DE"], {"GCP.DE": (127.40, "EUR")}, history={"GCP.DE": 505})
+        assert not rz.resolve(holding()).get("display_name")
+
+    def test_a_blank_stored_name_is_not_carried(self, market):
+        market(["GCP.DE"], {"GCP.DE": (127.40, "EUR")}, history={"GCP.DE": 505})
+        row = rz.resolve(holding(), self.pinned(display_name="   "))
+        assert not (row.get("display_name") or "").strip()

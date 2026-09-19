@@ -57,6 +57,15 @@ Dashboard — value over time, allocation, positions:
 
     ./.venv/bin/python dashboard.py && open data/dashboard.html
 
+Both of the above, on a schedule — weekdays at 23:00, after the US close:
+
+    bin/install-schedule.sh              # --at 18:30 for another time
+    bin/install-schedule.sh --remove
+
+The history series cannot be backfilled, so a day nobody ran the snapshot is
+gone. launchd rather than cron: it catches up a run missed because the Mac was
+asleep. Output goes to `data/logs/daily.log`.
+
 Text report:
 
     ./.venv/bin/python portfolio_monitor.py -p data/positions.csv -o report
