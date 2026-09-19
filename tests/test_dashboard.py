@@ -190,6 +190,53 @@ class TestMissingCostNote:
         assert "another currency" not in html
 
 
+class TestCostInAnotherCurrency:
+    """A cost basis need not share the listing's currency any more.
+
+    It used to be dropped on a mismatch, which is why the dashboard never met
+    this case. The conversion it did have fell back to the *position's* rate
+    where the holding's currency was absent - a USD cost converted at the EUR
+    rate, reported as P&L.
+    """
+
+    def usd_listing(self):
+        """A EUR cost basis against a listing quoted in USD."""
+        return snapshot(
+            total_value=87.0, fx_rates={"EUR": 1.0, "USD": 0.87},
+            positions=[{"ticker": "GE", "quantity": 1, "current_price": 100.0,
+                        "previous_close": 100.0, "currency": "USD",
+                        "cost_currency": "EUR"}])
+
+    def held(self, avg_cost=80.0):
+        return {"GE": Holding(isin="US3696043013", name="GE Aerospace",
+                              quantity=1, currency="EUR", avg_cost=avg_cost)}
+
+    def test_the_cost_is_converted_on_its_own_rate(self):
+        """80 EUR cost, 100 USD value = 87 EUR. A 7 EUR gain, not a 13 loss."""
+        row = dashboard.positions(self.usd_listing(), self.held(), {})[0]
+        assert row["pnl"] == pytest.approx(7.0)
+
+    def test_the_position_is_still_valued_in_the_base_currency(self):
+        row = dashboard.positions(self.usd_listing(), self.held(), {})[0]
+        assert row["value"] == pytest.approx(87.0)
+
+    def test_a_cost_currency_without_a_rate_yields_no_pnl(self):
+        """Not a P&L computed at the position's rate, which is a different
+        number wearing the right shape."""
+        snap = self.usd_listing()
+        snap["positions"][0]["cost_currency"] = "XXX"
+        row = dashboard.positions(snap, self.held(), {})[0]
+        assert row["pnl"] is None and row["value"] == pytest.approx(87.0)
+
+    def test_an_older_snapshot_falls_back_to_the_holdings_currency(self):
+        """Snapshots written before positions carried a cost currency state
+        only the holding's, which is what they meant at the time."""
+        snap = self.usd_listing()
+        del snap["positions"][0]["cost_currency"]
+        row = dashboard.positions(snap, self.held(), {})[0]
+        assert row["pnl"] == pytest.approx(7.0)
+
+
 class TestStaleSnapshot:
     """The dashboard values a snapshot but reads the cost basis from holdings.
     Where the two describe different portfolios, every figure still renders

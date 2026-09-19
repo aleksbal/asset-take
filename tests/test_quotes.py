@@ -190,7 +190,27 @@ class TestQuoteType:
         monkeypatch.setattr(fx, "rate", lambda c, b, on=None: 1.16)
         q = Quote.from_provider(4208.0, "GBp", session=date(2026, 9, 17),
                                 today=self.TODAY)
-        assert q.converted("EUR", fx) == pytest.approx(42.08 * 1.16)
+        assert q.converted("EUR", fx).amount == pytest.approx(42.08 * 1.16)
+
+    def test_a_conversion_keeps_the_rate_and_what_it_started_from(
+            self, monkeypatch):
+        """The pence price, the rate and the result are all recoverable.
+
+        A bare float cannot say whether a rate was applied, which is how 1.0
+        came to be defaulted in seven places.
+        """
+        import fx
+        monkeypatch.setattr(fx, "rate", lambda c, b, on=None: 1.16)
+        c = Quote.from_provider(4208.0, "GBp").converted("EUR", fx)
+        assert c.original.amount == 42.08      # already the major unit
+        assert c.original.currency == "GBP"
+        assert c.rate == 1.16
+        assert c.base == "EUR"
+
+    def test_a_quote_without_a_rate_does_not_convert(self, monkeypatch):
+        import fx
+        monkeypatch.setattr(fx, "rate", lambda c, b, on=None: None)
+        assert Quote.from_provider(100.0, "EUR").converted("XXX", fx) is None
 
     def test_a_quote_is_immutable(self):
         """The unit travels with the price; neither can drift from the other."""

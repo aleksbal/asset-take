@@ -14,6 +14,7 @@ import canonical
 import paths
 import price_history
 import trends
+from money import Converted, Money
 
 ROOT = Path(__file__).parent
 OUT = paths.DASHBOARD
@@ -103,6 +104,31 @@ def trend(ticker, price=None, on=None):
     return trends.describe(series, live=price, live_on=session)
 
 
+def _converted(amount, currency, rates, base):
+    """`amount` in `base` at a rate the snapshot recorded, or None without one.
+
+    Never a default of 1, which values a foreign amount as a domestic one and
+    is indistinguishable from a correct figure on the page.
+    """
+    if amount is None or not currency:
+        return None
+    rate = rates.get(currency)
+    return None if rate is None else Converted(Money(amount, currency), rate, base)
+
+
+def _cost_of(p, h, rates, base):
+    """A position's cost basis in `base`, or None where it states none.
+
+    The currency comes from the snapshot where it records one and from the
+    holding otherwise - a snapshot written before positions carried their cost
+    currency states only the holding's, which is what it meant at the time.
+    """
+    if not (h and h.avg_cost):
+        return None
+    return _converted(h.quantity * h.avg_cost,
+                      p.get("cost_currency") or h.currency, rates, base)
+
+
 def positions(snap, by_ticker, names):
     """Rows for the table and donut.
 
@@ -112,10 +138,13 @@ def positions(snap, by_ticker, names):
     """
     rows = []
     total = snap["total_value"]
+    base = snap.get("base_currency", "EUR")
+    rates = snap["fx_rates"]
     for p in snap["positions"]:
         h = by_ticker.get(p["ticker"])
-        fx = snap["fx_rates"].get(p["currency"], 1)
-        if p.get("current_price") is None:
+        value = _converted(p["quantity"] * (p.get("current_price") or 0),
+                           p["currency"], rates, base)
+        if p.get("current_price") is None or value is None:
             rows.append({
                 "name": names.get(p["ticker"]) or (h.name if h else p["ticker"]),
                 "ticker": p["ticker"], "qty": p["quantity"], "price": None,
@@ -124,21 +153,23 @@ def positions(snap, by_ticker, names):
                 "unpriced": True, "trend": {},
             })
             continue
-        value = p["quantity"] * p["current_price"] * fx
-        prev = p["quantity"] * (p.get("previous_close") or p["current_price"]) * fx
-        # avg_cost is denominated in the holding's own currency, so it needs
-        # the same conversion the value got. Subtracting an unconverted USD
-        # cost from a EUR value reports the exchange rate as a loss.
-        cost_fx = snap["fx_rates"].get(h.currency, fx) if h else fx
-        cost = (h.quantity * h.avg_cost * cost_fx) if (h and h.avg_cost) else None
+        previous = _converted(
+            p["quantity"] * (p.get("previous_close") or p["current_price"]),
+            p["currency"], rates, base)
+        # avg_cost is denominated in the currency the broker charged in, which
+        # need not be the listing's, so it is converted on its own rate rather
+        # than the position's. Falling back to the position's rate converted a
+        # USD cost basis at the EUR rate and reported the difference as P&L.
+        cost = _cost_of(p, h, rates, base)
+        value, prev = value.amount, previous.amount if previous else None
         rows.append({
             "name": names.get(p["ticker"]) or (h.name if h else p["ticker"]),
             "ticker": p["ticker"], "qty": p["quantity"], "price": p["current_price"],
             "currency": p["currency"], "value": value, "weight": value / total * 100,
-            "day_eur": value - prev,
+            "day_eur": (value - prev) if prev is not None else None,
             "day_pct": (value / prev - 1) * 100 if prev else 0,
-            "pnl": (value - cost) if cost else None,
-            "pnl_pct": ((value / cost - 1) * 100) if cost else None,
+            "pnl": (value - cost.amount) if cost and cost.amount else None,
+            "pnl_pct": ((value / cost.amount - 1) * 100) if cost and cost.amount else None,
             "unpriced": False,
             # The series is in the listing's own currency, not the base, so
             # the unconverted price is the one that belongs beside it.

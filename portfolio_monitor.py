@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import fx as fx_service
+import paths
+from money import Converted, Money
 from quotes import Quote
 
 try:
@@ -34,6 +36,10 @@ class Position:
     currency: str
     exchange: Optional[str] = None
     avg_cost: Optional[float] = None
+    # The currency `avg_cost` is denominated in - the broker's, which is not
+    # always the listing's. Absent means it shares `currency`, which is what
+    # a positions file written before this column said implicitly.
+    cost_currency: Optional[str] = None
     # The unit the venue quotes in, recorded at resolution. Not the same as
     # `currency`: London quotes pence under GBp while the position is in GBP.
     quote_currency: Optional[str] = None
@@ -67,6 +73,25 @@ class AlertConfig:
     consecutive_days_threshold: int = 3
     target_prices: dict[str, float] = field(default_factory=dict)
     portfolio_drop_threshold_pct: float = 10.0
+
+
+@dataclass
+class Settings:
+    """Everything a run is configured with.
+
+    A tuple of (base_currency, alerts) widened every time something became
+    configurable, and each addition broke both callers.
+
+    Declared after AlertConfig so the annotation is the class itself rather
+    than a forward reference. `snapshot.py` loads this module through
+    importlib without registering it in sys.modules, and dataclasses cannot
+    resolve a string annotation against a module it cannot find.
+    """
+    base_currency: str = 'EUR'
+    alerts: AlertConfig = field(default_factory=AlertConfig)
+    # Whether resolution should prefer a listing quoting in the holding's own
+    # currency over one with more history. Off; see resolve.PREFER_QUOTE_CURRENCY.
+    prefer_quote_currency: bool = False
 
 
 def parse_number(s, decimal_sep=None):
@@ -155,6 +180,12 @@ def load_portfolio(csv_path: str) -> list[Position]:
             # the column exists to carry.
             quote_currency = (norm_row.get('quote_currency') or '').strip()
 
+            # Where the file states none, the cost shares the position's
+            # currency - the assumption every positions.csv made before the
+            # column existed, and the one that held while a mismatched cost
+            # was being dropped upstream.
+            cost_currency = (norm_row.get('cost_currency') or '').strip().upper()
+
             if ticker and quantity > 0:
                 positions.append(Position(
                     ticker=ticker,
@@ -162,6 +193,7 @@ def load_portfolio(csv_path: str) -> list[Position]:
                     currency=currency,
                     exchange=exchange if exchange else None,
                     avg_cost=avg_cost,
+                    cost_currency=cost_currency or currency,
                     quote_currency=quote_currency or None
                 ))
 
@@ -187,6 +219,64 @@ def fetch_fx_rates(currencies: set[str], base_currency: str) -> dict[str, float]
             continue
         rates[currency] = value
     return rates
+
+
+def currencies(positions: list[Position]) -> set[str]:
+    """Every currency a rate is needed for.
+
+    Both the listing's and the cost basis's: they are no longer required to
+    match, so fetching rates for only the former leaves a foreign cost basis
+    unconvertible and its P&L silently absent.
+    """
+    wanted = set()
+    for pos in positions:
+        wanted.add(pos.currency)
+        wanted.add(pos.cost_currency or pos.currency)
+    return {c for c in wanted if c}
+
+
+def _converted(amount, currency, rates, base):
+    """`amount` in `base` at a rate already held, or None where none is.
+
+    Never a default of 1.0. That values a foreign amount as though it were
+    domestic - wrong by whatever the rate happens to be, and indistinguishable
+    from a correct figure once it is a bare number on a page.
+    """
+    if amount is None or not currency:
+        return None
+    rate = rates.get(currency)
+    return None if rate is None else Converted(Money(amount, currency), rate, base)
+
+
+def _amount(converted):
+    """The figure, or 0 where there is none.
+
+    For ordering and for a display line that has already established the
+    position is priced - never for a total, where a missing conversion must
+    stay missing rather than contribute nothing and look counted.
+    """
+    return converted.amount if converted else 0.0
+
+
+def value_of(pos: Position, rates: dict, base: str):
+    """A position's market value in `base`, or None where it cannot be had."""
+    if pos.current_price is None:
+        return None
+    return _converted(pos.quantity * pos.current_price, pos.currency, rates, base)
+
+
+def cost_of(pos: Position, rates: dict, base: str):
+    """A position's cost basis in `base`, or None where it states none.
+
+    `avg_cost` is denominated in `cost_currency` - what the broker charged in -
+    which is not always what the listing quotes in. Both sides of a P&L are
+    converted, so what is reported is the local gain expressed in the base
+    currency; we hold no rate for the purchase date and do not pretend to.
+    """
+    if not pos.avg_cost:
+        return None
+    return _converted(pos.quantity * pos.avg_cost,
+                      pos.cost_currency or pos.currency, rates, base)
 
 
 def _quote_currency(ticker: str) -> Optional[str]:
@@ -287,18 +377,16 @@ def calculate_report(positions: list[Position], base_currency: str,
         # of omitting it above: a USD holding counted as though it were EUR,
         # wrong by whatever the exchange rate is. Unpriced is reported;
         # misvalued is not.
-        if pos.currency not in fx_rates:
+        value = value_of(pos, fx_rates, base_currency)
+        if value is None:
             pos.current_price = pos.previous_close = None
             continue
-        fx_rate = fx_rates[pos.currency]
-
-        # Calculate position value in base currency
-        position_value = pos.quantity * pos.current_price * fx_rate
-        total_value += position_value
+        total_value += value.amount
 
         if pos.previous_close:
-            position_value_prev = pos.quantity * pos.previous_close * fx_rate
-            total_value_previous += position_value_prev
+            previous = _converted(pos.quantity * pos.previous_close,
+                                  pos.currency, fx_rates, base_currency)
+            total_value_previous += previous.amount
 
             # Calculate daily change
             pct_change = ((pos.current_price - pos.previous_close) / pos.previous_close) * 100
@@ -400,7 +488,8 @@ def generate_long_report(report: PortfolioReport) -> str:
         lines.append("🟢 TOP GAINERS")
         lines.append("-" * 40)
         for pos, pct in report.gainers[:5]:
-            value = pos.quantity * (pos.current_price or 0) * report.fx_rates.get(pos.currency, 1.0)
+            value = value_of(pos, report.fx_rates, report.base_currency)
+            value = value.amount if value else 0
             lines.append(f"  {pos.ticker:8} +{pct:5.2f}%  |  {format_currency(value, report.base_currency):>12}")
         lines.append("")
 
@@ -409,7 +498,8 @@ def generate_long_report(report: PortfolioReport) -> str:
         lines.append("🔴 TOP LOSERS")
         lines.append("-" * 40)
         for pos, pct in report.losers[:5]:
-            value = pos.quantity * (pos.current_price or 0) * report.fx_rates.get(pos.currency, 1.0)
+            value = value_of(pos, report.fx_rates, report.base_currency)
+            value = value.amount if value else 0
             lines.append(f"  {pos.ticker:8} {pct:5.2f}%  |  {format_currency(value, report.base_currency):>12}")
         lines.append("")
 
@@ -422,12 +512,12 @@ def generate_long_report(report: PortfolioReport) -> str:
     # Sort positions by value
     sorted_positions = sorted(
         [p for p in report.positions if p.current_price],
-        key=lambda p: p.quantity * p.current_price * report.fx_rates.get(p.currency, 1.0),
+        key=lambda p: _amount(value_of(p, report.fx_rates, report.base_currency)),
         reverse=True
     )
 
     for pos in sorted_positions:
-        value = pos.quantity * pos.current_price * report.fx_rates.get(pos.currency, 1.0)
+        value = _amount(value_of(pos, report.fx_rates, report.base_currency))
         daily_pct = ((pos.current_price - pos.previous_close) / pos.previous_close * 100) if pos.previous_close else 0
         lines.append(f"  {pos.ticker:<10} {pos.quantity:>10.2f} {pos.current_price:>12.2f} {format_currency(value, report.base_currency):>14} {daily_pct:>+9.2f}%")
 
@@ -443,10 +533,15 @@ def generate_long_report(report: PortfolioReport) -> str:
 
         total_unrealized = 0
         for pos in positions_with_cost:
-            pnl = (pos.current_price - pos.avg_cost) * pos.quantity
-            pnl_pct = ((pos.current_price - pos.avg_cost) / pos.avg_cost) * 100
-            fx_rate = report.fx_rates.get(pos.currency, 1.0)
-            pnl_base = pnl * fx_rate
+            # Both sides converted, because they need not share a currency any
+            # more. Subtracting an unconverted cost from a converted value
+            # reports the exchange rate itself as a gain or loss.
+            value = value_of(pos, report.fx_rates, report.base_currency)
+            cost = cost_of(pos, report.fx_rates, report.base_currency)
+            if value is None or cost is None or not cost.amount:
+                continue
+            pnl_base = value.amount - cost.amount
+            pnl_pct = (value.amount / cost.amount - 1) * 100
             total_unrealized += pnl_base
             lines.append(f"  {pos.ticker:<10} {pos.avg_cost:>10.2f} {pos.current_price:>10.2f} {format_currency(pnl_base, report.base_currency):>14} {pnl_pct:>+9.2f}%")
 
@@ -523,25 +618,34 @@ def save_reports(report: PortfolioReport, output_base: str):
     return long_path, short_path
 
 
-def load_config(config_path: Optional[str]) -> tuple[str, AlertConfig]:
-    """Load configuration from JSON file or use defaults."""
-    base_currency = 'EUR'
-    alert_config = AlertConfig()
+def load_config(config_path: Optional[str] = None) -> Settings:
+    """Settings from a JSON file, or the defaults where there is none.
 
-    if config_path and os.path.exists(config_path):
-        with open(config_path, 'r') as f:
+    Falls back to `paths.CONFIG` (data/config.json), which is where an
+    instance's own settings belong. Passing None used to mean "no config at
+    all", so nothing outside the CLI ever read one - `snapshot.py` called
+    `load_config(None)` and silently got the defaults every run.
+    """
+    settings = Settings()
+    path = config_path or paths.CONFIG
+
+    if path and os.path.exists(path):
+        with open(path, 'r') as f:
             config = json.load(f)
 
-        base_currency = config.get('base_currency', 'EUR')
+        settings.base_currency = config.get('base_currency', 'EUR')
+        settings.prefer_quote_currency = bool(
+            config.get('prefer_quote_currency', False))
 
         if 'alerts' in config:
             alerts = config['alerts']
-            alert_config.daily_change_threshold_pct = alerts.get('daily_change_threshold_pct', 5.0)
-            alert_config.consecutive_days_threshold = alerts.get('consecutive_days_threshold', 3)
-            alert_config.target_prices = alerts.get('target_prices', {})
-            alert_config.portfolio_drop_threshold_pct = alerts.get('portfolio_drop_threshold_pct', 10.0)
+            a = settings.alerts
+            a.daily_change_threshold_pct = alerts.get('daily_change_threshold_pct', 5.0)
+            a.consecutive_days_threshold = alerts.get('consecutive_days_threshold', 3)
+            a.target_prices = alerts.get('target_prices', {})
+            a.portfolio_drop_threshold_pct = alerts.get('portfolio_drop_threshold_pct', 10.0)
 
-    return base_currency, alert_config
+    return settings
 
 
 def main():
@@ -557,12 +661,14 @@ def main():
     print("=" * 40)
 
     # Load configuration
-    base_currency, alert_config = load_config(args.config)
+    settings = load_config(args.config)
+    base_currency, alert_config = settings.base_currency, settings.alerts
     print(f"📌 Base currency: {base_currency}")
 
-    # Load asset-take
-    print(f"📂 Loading asset-take from: {args.portfolio}")
-    positions = load_portfolio(args.portfolio)
+    # Load asset-take. argparse maps --asset-take to args.asset_take; this
+    # read args.portfolio, so every invocation raised AttributeError.
+    print(f"📂 Loading asset-take from: {args.asset_take}")
+    positions = load_portfolio(args.asset_take)
     print(f"   Found {len(positions)} positions")
 
     # Get unique currencies
