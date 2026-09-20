@@ -6,8 +6,8 @@ indistinguishable from one that has not, and both render.
 """
 import pytest
 
-import fx
-from money import Converted, Money, total
+from market import fx
+from market.money import Converted, Money, total
 
 
 @pytest.fixture

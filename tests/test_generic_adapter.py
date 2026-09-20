@@ -7,8 +7,8 @@ valuation, which only a specific adapter can provide.
 """
 import pytest
 
-import adapters
-from adapters import generic, ing
+from holdings import adapters
+from holdings.adapters import generic, ing
 
 
 def write(tmp_path, text, name="export.csv", encoding="utf-8"):

@@ -8,7 +8,7 @@ from datetime import date
 import pytest
 
 import paths
-import price_history
+from market import prices as price_history
 
 
 @pytest.fixture(autouse=True)

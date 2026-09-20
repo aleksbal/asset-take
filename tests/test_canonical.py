@@ -7,8 +7,8 @@ dashboard died on any import from that source.
 """
 import pytest
 
-import canonical
-from canonical import Holding
+from holdings import canonical
+from holdings.canonical import Holding
 
 
 def holding(**kw):

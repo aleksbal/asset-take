@@ -16,10 +16,10 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional
 
-import fx as fx_service
+from market import fx as fx_service
 import paths
-from money import Converted, Money
-from quotes import Quote
+from market.money import Converted, Money
+from market.quotes import Quote
 
 try:
     import yfinance as yf

@@ -10,8 +10,8 @@ Network calls are stubbed: these test the decision, not the provider.
 """
 import pytest
 
-import resolve as rz
-from canonical import Holding
+from holdings import resolve as rz
+from holdings.canonical import Holding
 
 
 def holding(**kw):

@@ -8,9 +8,12 @@ from datetime import date
 
 import pytest
 
-import canonical
+from holdings import canonical
 import dashboard
-from canonical import Holding
+from render import html as page
+from market import indicators as ix
+from views import portfolio
+from holdings.canonical import Holding
 
 
 def snapshot(**kw):
@@ -59,34 +62,34 @@ def matched(sap_cost=None, alv_cost=None):
 def test_computes_pnl_where_a_cost_basis_exists():
     by_ticker = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                                    currency="EUR", avg_cost=150.0)}
-    rows = dashboard.positions(snapshot(), by_ticker, {})
+    rows = portfolio.rows(snapshot(), by_ticker, {})
     sap = next(r for r in rows if r["ticker"] == "SAP.DE")
-    assert sap["pnl"] == 4 * 200.0 - 4 * 150.0
-    assert sap["pnl_pct"] is not None
+    assert sap["position"]["pnl"] == 4 * 200.0 - 4 * 150.0
+    assert sap["position"]["pnl_pct"] is not None
 
 
 def test_omits_pnl_where_none_exists_rather_than_failing():
     by_ticker = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                                    currency="EUR", avg_cost=None)}
-    rows = dashboard.positions(snapshot(), by_ticker, {})
+    rows = portfolio.rows(snapshot(), by_ticker, {})
     sap = next(r for r in rows if r["ticker"] == "SAP.DE")
-    assert sap["pnl"] is None and sap["pnl_pct"] is None
-    assert sap["value"] == 800.0        # still valued
-    assert sap["weight"] > 0
+    assert sap["position"]["pnl"] is None and sap["position"]["pnl_pct"] is None
+    assert sap["position"]["value"] == 800.0        # still valued
+    assert sap["position"]["weight"] > 0
 
 
 def test_values_a_position_absent_from_holdings():
     """A snapshot may name a ticker the holdings file no longer carries."""
-    rows = dashboard.positions(snapshot(), {}, {})
+    rows = portfolio.rows(snapshot(), {}, {})
     assert len(rows) == 2
-    assert all(r["pnl"] is None for r in rows)
+    assert all(r["position"]["pnl"] is None for r in rows)
 
 
 def test_renders_a_table_with_mixed_cost_availability():
     by_ticker = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                                    currency="EUR", avg_cost=150.0)}
-    rows = dashboard.positions(snapshot(), by_ticker, {})
-    html = dashboard.table(rows)
+    rows = portfolio.rows(snapshot(), by_ticker, {})
+    html = page.table(rows)
     assert "—" in html          # the position without a cost basis
     assert html.count('<td class="nm"') == 2  # body rows, header excluded
 
@@ -95,8 +98,8 @@ def test_donut_folds_beyond_seven_into_other():
     """Categorical hues are assigned in fixed order and never cycled."""
     positions = [{"ticker": f"T{i}", "quantity": 1, "current_price": 100.0,
                   "previous_close": 100.0, "currency": "EUR"} for i in range(10)]
-    rows = dashboard.positions(snapshot(positions=positions, total_value=1000.0), {}, {})
-    svg = dashboard.donut(rows)
+    rows = portfolio.rows(snapshot(positions=positions, total_value=1000.0), {}, {})
+    svg = page.donut(rows)
     assert svg.count('class="seg"') == 8
     assert "Other (3)" in svg
 
@@ -114,33 +117,33 @@ class TestUnpricedPositions:
         ])
 
     def test_does_not_raise(self):
-        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        rows = portfolio.rows(self.unpriced_snapshot(), {}, {})
         assert len(rows) == 2
 
     def test_marks_the_unpriced_position(self):
-        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        rows = portfolio.rows(self.unpriced_snapshot(), {}, {})
         broken = next(r for r in rows if r["ticker"] == "BROKEN.XX")
-        assert broken["unpriced"] is True
-        assert broken["value"] is None
+        assert broken["priced"] is False
+        assert broken["position"].get("value") is None
 
     def test_unpriced_is_not_valued_at_zero(self):
         """Zero would understate the total while looking complete."""
-        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
-        assert next(r for r in rows if r["ticker"] == "BROKEN.XX")["value"] != 0
+        rows = portfolio.rows(self.unpriced_snapshot(), {}, {})
+        assert next(r for r in rows if r["ticker"] == "BROKEN.XX")["position"].get("value") != 0
 
     def test_sorts_unpriced_last(self):
-        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
+        rows = portfolio.rows(self.unpriced_snapshot(), {}, {})
         assert rows[-1]["ticker"] == "BROKEN.XX"
 
     def test_table_renders_both(self):
-        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
-        html = dashboard.table(rows)
+        rows = portfolio.rows(self.unpriced_snapshot(), {}, {})
+        html = page.table(rows)
         assert "no price available" in html
         assert html.count('<td class="nm"') == 2
 
     def test_donut_excludes_unpriced(self):
-        rows = dashboard.positions(self.unpriced_snapshot(), {}, {})
-        assert dashboard.donut(rows).count('class="seg"') == 1
+        rows = portfolio.rows(self.unpriced_snapshot(), {}, {})
+        assert page.donut(rows).count('class="seg"') == 1
 
 
 class TestUnknownPortfolioPnl:
@@ -151,7 +154,8 @@ class TestUnknownPortfolioPnl:
     def _html(self, pair, tmp_path, monkeypatch):
         snap, by_ticker = pair
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
-        monkeypatch.setattr(dashboard, "load",
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "report.json")
+        monkeypatch.setattr(portfolio, "load",
                             lambda: ([snap], by_ticker, {}))
         dashboard.main()
         return (tmp_path / "out.html").read_text(encoding="utf-8")
@@ -182,16 +186,16 @@ class TestForeignCurrencyCostBasis:
     def test_flat_position_shows_no_gain_or_loss(self):
         by_ticker = {"AAPL": Holding(isin="US0378331005", name="Apple", quantity=1,
                                      currency="USD", avg_cost=100.0)}
-        row = dashboard.positions(self.usd_snapshot(), by_ticker, {})[0]
-        assert row["pnl"] == 0
-        assert abs(row["pnl_pct"]) < 1e-9
+        row = portfolio.rows(self.usd_snapshot(), by_ticker, {})[0]
+        assert row["position"]["pnl"] == 0
+        assert abs(row["position"]["pnl_pct"]) < 1e-9
 
     def test_real_gain_survives_the_conversion(self):
         by_ticker = {"AAPL": Holding(isin="US0378331005", name="Apple", quantity=1,
                                      currency="USD", avg_cost=50.0)}
-        row = dashboard.positions(self.usd_snapshot(), by_ticker, {})[0]
-        assert row["pnl"] == 45.0          # a 50 USD gain, converted at 0.9
-        assert round(row["pnl_pct"]) == 100
+        row = portfolio.rows(self.usd_snapshot(), by_ticker, {})[0]
+        assert row["position"]["pnl"] == 45.0          # a 50 USD gain, converted at 0.9
+        assert round(row["position"]["pnl_pct"]) == 100
 
 
 class TestMissingCostNote:
@@ -200,8 +204,9 @@ class TestMissingCostNote:
 
     def test_note_reports_an_absent_cost_basis(self, tmp_path, monkeypatch):
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "report.json")
         snap, held = matched()
-        monkeypatch.setattr(dashboard, "load", lambda: ([snap], held, {}))
+        monkeypatch.setattr(portfolio, "load", lambda: ([snap], held, {}))
         dashboard.main()
         html = (tmp_path / "out.html").read_text(encoding="utf-8")
         assert "no cost basis" in html
@@ -231,33 +236,33 @@ class TestCostInAnotherCurrency:
 
     def test_the_cost_is_converted_on_its_own_rate(self):
         """80 EUR cost, 100 USD value = 87 EUR. A 7 EUR gain, not a 13 loss."""
-        row = dashboard.positions(self.usd_listing(), self.held(), {})[0]
-        assert row["pnl"] == pytest.approx(7.0)
+        row = portfolio.rows(self.usd_listing(), self.held(), {})[0]
+        assert row["position"]["pnl"] == pytest.approx(7.0)
 
     def test_the_position_is_still_valued_in_the_base_currency(self):
-        row = dashboard.positions(self.usd_listing(), self.held(), {})[0]
-        assert row["value"] == pytest.approx(87.0)
+        row = portfolio.rows(self.usd_listing(), self.held(), {})[0]
+        assert row["position"]["value"] == pytest.approx(87.0)
 
     def test_a_cost_currency_without_a_rate_yields_no_pnl(self):
         """Not a P&L computed at the position's rate, which is a different
         number wearing the right shape."""
         snap = self.usd_listing()
         snap["positions"][0]["cost_currency"] = "XXX"
-        row = dashboard.positions(snap, self.held(), {})[0]
-        assert row["pnl"] is None and row["value"] == pytest.approx(87.0)
+        row = portfolio.rows(snap, self.held(), {})[0]
+        assert row["position"]["pnl"] is None and row["position"]["value"] == pytest.approx(87.0)
 
     def test_a_cost_without_a_rate_is_not_reported_as_stating_none(self):
         """Different claims: one is a fact about the holding, the other about
         our data. Folding them together told the reader the wrong one."""
         snap = self.usd_listing()
         snap["positions"][0]["cost_currency"] = "XXX"
-        row = dashboard.positions(snap, self.held(), {})[0]
+        row = portfolio.rows(snap, self.held(), {})[0]
         assert row["cost_unconverted"] is True
 
     def test_a_position_stating_no_cost_is_not_flagged_as_unconvertible(self):
-        row = dashboard.positions(self.usd_listing(), self.held(avg_cost=None),
+        row = portfolio.rows(self.usd_listing(), self.held(avg_cost=None),
                                   {})[0]
-        assert row["pnl"] is None and row["cost_unconverted"] is False
+        assert row["position"]["pnl"] is None and row["cost_unconverted"] is False
 
 
 class TestLegacySnapshotCostCurrency:
@@ -284,20 +289,20 @@ class TestLegacySnapshotCostCurrency:
 
     def test_the_cost_is_read_in_the_snapshots_own_currency(self):
         """80 USD cost, 100 USD value, at 0.87: a 20 USD gain = 17.40 EUR."""
-        row = dashboard.positions(self.legacy(), self.held(), {})[0]
-        assert row["pnl"] == pytest.approx(17.4)
+        row = portfolio.rows(self.legacy(), self.held(), {})[0]
+        assert row["position"]["pnl"] == pytest.approx(17.4)
 
     def test_a_later_holding_currency_change_does_not_reinterpret_it(self):
         """`mismatch()` accepts this snapshot - quantity and the numeric cost
         are unchanged - so the dashboard must not read the old 80 as EUR."""
-        row = dashboard.positions(self.legacy(), self.held("EUR"), {})[0]
-        assert row["pnl"] == pytest.approx(17.4)      # not 87 - 80 = 7
+        row = portfolio.rows(self.legacy(), self.held("EUR"), {})[0]
+        assert row["position"]["pnl"] == pytest.approx(17.4)      # not 87 - 80 = 7
 
     def test_a_stated_cost_currency_still_wins(self):
         snap = self.legacy()
         snap["positions"][0]["cost_currency"] = "EUR"
-        row = dashboard.positions(snap, self.held("EUR"), {})[0]
-        assert row["pnl"] == pytest.approx(7.0)
+        row = portfolio.rows(snap, self.held("EUR"), {})[0]
+        assert row["position"]["pnl"] == pytest.approx(7.0)
 
 
 class TestBaseCurrencyLabels:
@@ -317,7 +322,8 @@ class TestBaseCurrencyLabels:
         for h in held.values():
             h.currency = base
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
-        monkeypatch.setattr(dashboard, "load", lambda: ([snap], held, {}))
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "report.json")
+        monkeypatch.setattr(portfolio, "load", lambda: ([snap], held, {}))
         dashboard.main()
         return (tmp_path / "out.html").read_text(encoding="utf-8")
 
@@ -352,12 +358,12 @@ class TestMixedBaseCurrencies:
     def test_a_single_base_keeps_every_snapshot(self):
         snaps = [self.snap("2026-09-17", "EUR", 100.0),
                  self.snap("2026-09-18", "EUR", 110.0)]
-        assert dashboard.comparable(snaps) == snaps
+        assert portfolio.comparable(snaps) == snaps
 
     def test_earlier_snapshots_in_another_base_are_dropped(self):
         snaps = [self.snap("2026-09-17", "EUR", 100.0),
                  self.snap("2026-09-18", "USD", 118.0)]
-        kept = dashboard.comparable(snaps)
+        kept = portfolio.comparable(snaps)
         assert [s["date"] for s in kept] == ["2026-09-18"]
 
     def test_a_base_that_changed_and_changed_back_is_not_spliced(self):
@@ -366,19 +372,20 @@ class TestMixedBaseCurrencies:
         snaps = [self.snap("2026-09-16", "EUR", 100.0),
                  self.snap("2026-09-17", "USD", 118.0),
                  self.snap("2026-09-18", "EUR", 102.0)]
-        assert [s["date"] for s in dashboard.comparable(snaps)] == ["2026-09-18"]
+        assert [s["date"] for s in portfolio.comparable(snaps)] == ["2026-09-18"]
 
     def test_a_snapshot_silent_on_its_base_is_read_as_eur(self):
         old = snapshot(date="2026-09-17", total_value=100.0)
         del old["base_currency"]
         snaps = [old, self.snap("2026-09-18", "EUR", 110.0)]
-        assert len(dashboard.comparable(snaps)) == 2
+        assert len(portfolio.comparable(snaps)) == 2
 
     def test_the_dashboard_says_what_it_left_out(self, tmp_path, monkeypatch):
         snap, held = matched(sap_cost=150.0)
         older = snapshot(date="2026-09-17", base_currency="USD", total_value=99.0)
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
-        monkeypatch.setattr(dashboard, "load", lambda: ([older, snap], held, {}))
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "report.json")
+        monkeypatch.setattr(portfolio, "load", lambda: ([older, snap], held, {}))
         dashboard.main()
         html = (tmp_path / "out.html").read_text(encoding="utf-8")
         assert "denominated in another currency" in html
@@ -395,19 +402,19 @@ class TestStaleSnapshot:
     """
 
     def test_agrees_where_the_snapshot_matches(self):
-        assert dashboard.mismatch(snapshot(), holdings()) == ([], [], [])
+        assert portfolio.mismatch(snapshot(), holdings()) == ([], [], [])
 
     def test_reports_a_position_no_longer_held(self):
         held = holdings()
         del held["ALV.DE"]
-        gone, added, changed = dashboard.mismatch(snapshot(), held)
+        gone, added, changed = portfolio.mismatch(snapshot(), held)
         assert gone == ["ALV.DE"] and not added and not changed
 
     def test_reports_a_newly_held_position(self):
         held = holdings()
         held["RHM.DE"] = Holding(isin="DE0007030009", name="Rheinmetall AG",
                                  quantity=19, currency="EUR", avg_cost=564.28)
-        gone, added, changed = dashboard.mismatch(snapshot(), held)
+        gone, added, changed = portfolio.mismatch(snapshot(), held)
         assert added == ["RHM.DE"] and not gone and not changed
 
     def test_catches_a_quantity_change_the_tickers_hide(self):
@@ -415,7 +422,7 @@ class TestStaleSnapshot:
         while making every derived figure for that position wrong."""
         held = holdings()
         held["SAP.DE"].quantity = 9
-        gone, added, changed = dashboard.mismatch(snapshot(), held)
+        gone, added, changed = portfolio.mismatch(snapshot(), held)
         assert changed == ["SAP.DE quantity 4 -> 9"] and not gone and not added
 
     def test_catches_a_cost_change_the_quantities_hide(self):
@@ -430,7 +437,7 @@ class TestStaleSnapshot:
              "previous_close": 198.0, "currency": "EUR", "avg_cost": 150.0}])
         held = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                                   currency="EUR", avg_cost=175.0)}
-        gone, added, changed = dashboard.mismatch(snap, held)
+        gone, added, changed = portfolio.mismatch(snap, held)
         assert changed == ["SAP.DE cost 150 -> 175"] and not gone and not added
 
     def test_catches_a_cost_basis_that_appeared(self):
@@ -440,7 +447,7 @@ class TestStaleSnapshot:
              "previous_close": 198.0, "currency": "EUR", "avg_cost": None}])
         held = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                                   currency="EUR", avg_cost=150.0)}
-        assert dashboard.mismatch(snap, held)[2] == ["SAP.DE cost — -> 150"]
+        assert portfolio.mismatch(snap, held)[2] == ["SAP.DE cost — -> 150"]
 
     def test_catches_a_cost_currency_change(self):
         """Re-resolving to a listing in another currency moves the unit the
@@ -451,7 +458,7 @@ class TestStaleSnapshot:
              "cost_currency": "USD"}])
         held = {"GE": Holding(isin="US3696043013", name="GE Aerospace", quantity=4,
                               currency="EUR", avg_cost=150.0)}
-        assert dashboard.mismatch(snap, held)[2] == ["GE cost currency USD -> EUR"]
+        assert portfolio.mismatch(snap, held)[2] == ["GE cost currency USD -> EUR"]
 
     def test_a_snapshot_silent_on_cost_currency_is_not_a_change(self):
         """Snapshots written before positions carried one say nothing about
@@ -461,13 +468,14 @@ class TestStaleSnapshot:
              "previous_close": 198.0, "currency": "EUR", "avg_cost": 150.0}])
         held = {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                                   currency="EUR", avg_cost=150.0)}
-        assert dashboard.mismatch(snap, held) == ([], [], [])
+        assert portfolio.mismatch(snap, held) == ([], [], [])
 
     def test_main_refuses_rather_than_rendering_a_hybrid(
             self, tmp_path, monkeypatch):
         out = tmp_path / "out.html"
         monkeypatch.setattr(dashboard, "OUT", out)
-        monkeypatch.setattr(dashboard, "load",
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "report.json")
+        monkeypatch.setattr(portfolio, "load",
                             lambda: ([snapshot()], {}, {}))
         with pytest.raises(SystemExit) as e:
             dashboard.main()
@@ -478,55 +486,67 @@ class TestStaleSnapshot:
         held = holdings()
         held["SAP.DE"].quantity = 9
         del held["ALV.DE"]
-        msg = dashboard._stale(snapshot(), *dashboard.mismatch(snapshot(), held))
+        msg = portfolio._stale(snapshot(), *portfolio.mismatch(snapshot(), held))
         assert "ALV.DE" in msg and "SAP.DE quantity 4 -> 9" in msg
         assert "2026-09-18" in msg       # which snapshot is the stale one
 
 
 class TestTrendColumns:
-    """Trend metrics are shown as facts. A position with no series shows an
+    """Every parameter renders, and one the series cannot support renders an
     em dash rather than a blank or a zero - absent and neutral are different
-    claims, and a reader cannot tell them apart from an empty cell."""
+    claims, and a reader cannot tell them apart from an empty cell.
 
-    def trended(self, **kw):
-        base = {"drawdown": {"pct": -12.4, "days_since_peak": 78,
-                             "peak": 100.0, "peak_on": "2026-07-01"},
-                "vs_ma50": -3.2, "vs_ma200": -8.1, "rsi": 41.0,
-                "last": 87.6, "sessions": 505}
-        base.update(kw)
-        return base
+    The renderer is keyed on a parameter's unit, never its name. That is what
+    lets a parameter added to the registry appear here without this file or
+    render/html.py being touched."""
 
-    def test_a_drawdown_shows_the_fall_and_the_days(self):
-        html = dashboard._peak_cell(self.trended())
-        assert "-12.4%" in html and "78d ago" in html
-        assert 'class="peak-age"' in html   # a span, never the cell itself
+    def test_a_fall_shows_its_size(self):
+        assert "-12.4%" in page.cell(-12.4, "fall")
 
-    def test_a_position_without_a_series_shows_a_dash(self):
-        assert "—" in dashboard._peak_cell({})
-        assert "—" in dashboard._ma_cell({})
-        assert "—" in dashboard._rsi_cell({})
+    def test_the_age_of_a_high_is_shown_in_days(self):
+        assert "78d" in page.cell(78, "days")
+
+    def test_a_parameter_without_a_series_shows_a_dash(self):
+        for unit in ("fall", "days", "percent", "index"):
+            assert "\u2014" in page.cell(None, unit)
 
     def test_an_absent_metric_is_not_rendered_as_zero(self):
         """A missing 200-day average is not 'at its average'."""
-        assert "0" not in dashboard._ma_cell({"vs_ma200": None})
+        assert "0" not in page.cell(None, "percent")
 
     def test_a_small_fall_is_not_marked_as_a_decline(self):
         """Colour is a claim. A 2% wobble is not one."""
-        assert "dn" not in dashboard._peak_cell(
-            self.trended(drawdown={"pct": -2.0, "days_since_peak": 5,
-                                   "peak": 100.0, "peak_on": "2026-09-13"}))
+        assert "dn" not in page.cell(-2.0, "fall")
 
-    def test_the_table_carries_the_trend_headers(self):
-        rows = dashboard.positions(snapshot(), {}, {})
-        html = dashboard.table(rows)
-        assert "From 6m high" in html and "vs 200d" in html and "RSI" in html
+    def test_a_large_fall_is(self):
+        assert "dn" in page.cell(-12.4, "fall")
+
+    def test_a_fall_is_never_coloured_green(self):
+        """Its sign carries no information: a drawdown is always a fall."""
+        assert "up" not in page.cell(-0.1, "fall")
+
+    def test_an_index_is_left_neutral(self):
+        """30 and 70 are conventional markers, not thresholds to act on."""
+        cell = page.cell(82.0, "index")
+        assert "up" not in cell and "dn" not in cell
+
+    def test_the_table_carries_a_header_per_declared_parameter(self):
+        rows = portfolio.rows(snapshot(), {}, {})
+        markup = page.table(rows)
+        for declared in ix.declared():
+            assert declared["label"] in markup
+
+    def test_a_header_explains_itself(self):
+        """What a column means travels with it, for the reader and the tooltip."""
+        assert ix.RSI.means in page.table([])
 
     def test_an_unpriced_row_still_spans_the_full_table(self):
         """The colspan has to match the header, or the row shears sideways."""
-        markup = dashboard.table([])
+        markup = page.table([])
         header = markup.count("<th") - markup.count("<thead")   # <thead matches <th
-        row = dashboard._row_html({"unpriced": True, "name": "X", "ticker": "X",
-                                   "qty": 1})
+        units = [(d["key"], d["unit"]) for d in ix.declared()]
+        row = page._row({"priced": False, "name": "X", "ticker": "X",
+                         "values": {}, "position": {"quantity": 1}}, units)
         assert int(row.split('colspan="')[1].split('"')[0]) == header - 2
 
 
@@ -542,42 +562,42 @@ class TestTrendUsesTheDisplayedPrice:
         start = date(2025, 1, 1)
         stored = {(start + timedelta(days=i)).isoformat(): (100.0, "yahoo")
                   for i in range(400)}
-        monkeypatch.setattr(dashboard.price_history, "load",
+        monkeypatch.setattr(portfolio.price_history, "load",
                             lambda t: dict(stored))
         return stored
 
     def test_the_live_price_is_included(self, series):
-        m = dashboard.trend("SAP.DE", price=150.0, on=date(2026, 2, 5))
+        m = portfolio._series("SAP.DE", price=150.0, on=date(2026, 2, 5))
         assert m["last"] == 150.0
 
     def test_it_is_not_written_back(self, series, monkeypatch):
         """Transient. Writing it would fix an intraday value as a close."""
         written = []
-        monkeypatch.setattr(dashboard.price_history, "record",
+        monkeypatch.setattr(portfolio.price_history, "record",
                             lambda *a, **k: written.append(a))
-        dashboard.trend("SAP.DE", price=150.0, on=date(2026, 2, 5))
+        portfolio._series("SAP.DE", price=150.0, on=date(2026, 2, 5))
         assert written == []
 
     def test_a_session_already_stored_is_not_duplicated(self, series):
-        m = dashboard.trend("SAP.DE", price=999.0, on=date(2025, 6, 1))
+        m = portfolio._series("SAP.DE", price=999.0, on=date(2025, 6, 1))
         assert m["last"] == 100.0      # the stored close for that day wins
 
     def test_without_a_price_the_series_stands_alone(self, series):
-        assert dashboard.trend("SAP.DE")["last"] == 100.0
+        assert portfolio._series("SAP.DE")["last"] == 100.0
 
     def test_no_series_means_no_metrics(self, monkeypatch):
-        monkeypatch.setattr(dashboard.price_history, "load", lambda t: {})
-        assert dashboard.trend("SAP.DE", price=150.0) == {}
+        monkeypatch.setattr(portfolio.price_history, "load", lambda t: {})
+        assert portfolio._series("SAP.DE", price=150.0) == {}
 
     def test_a_stale_quote_does_not_invent_a_session(self, series):
         """Regenerating the dashboard without a fresh snapshot would append
         the last snapshot's price under a new date, fabricating a session
         across whatever gap had passed and resetting days_since_peak."""
-        m = dashboard.trend("SAP.DE", price=999.0, on="2025-06-01")
+        m = portfolio._series("SAP.DE", price=999.0, on="2025-06-01")
         assert m["last"] == 100.0
 
     def test_a_quote_newer_than_the_series_is_used(self, series):
-        m = dashboard.trend("SAP.DE", price=999.0, on="2026-02-05")
+        m = portfolio._series("SAP.DE", price=999.0, on="2026-02-05")
         assert m["last"] == 999.0
 
     def test_a_settled_quote_is_not_re_entered_as_live(self, series):
@@ -585,34 +605,34 @@ class TestTrendUsesTheDisplayedPrice:
         holds. Treating that close as a new observation advances Wilder's
         smoothing with a duplicate zero change."""
         stored_last = "2026-02-04"
-        m = dashboard.trend("SAP.DE", price=100.0, on=stored_last)
+        m = portfolio._series("SAP.DE", price=100.0, on=stored_last)
         assert m["sessions"] == 400
-        assert m["rsi"] == dashboard.trend("SAP.DE")["rsi"]
+        assert m["rsi"] == portfolio._series("SAP.DE")["rsi"]
 
     def test_positions_passes_the_settled_date_not_the_snapshot_date(
             self, series, monkeypatch):
         """The wiring, not just the helper: a snapshot dated after the close
         it holds must not re-enter that close as a live observation."""
         seen = {}
-        monkeypatch.setattr(dashboard, "trend",
+        monkeypatch.setattr(portfolio, "_series",
                             lambda t, price=None, on=None: seen.update(on=on) or {})
         snap = snapshot(date="2026-02-07")          # a Saturday snapshot
         snap["positions"] = [{"ticker": "SAP.DE", "quantity": 1,
                               "current_price": 100.0, "previous_close": 100.0,
                               "currency": "EUR", "price_date": "2026-02-06"}]
-        dashboard.positions(snap, {}, {})
+        portfolio.rows(snap, {}, {})
         assert seen["on"] == "2026-02-06"
 
     def test_the_snapshot_date_is_used_when_the_quote_is_unsettled(
             self, series, monkeypatch):
         seen = {}
-        monkeypatch.setattr(dashboard, "trend",
+        monkeypatch.setattr(portfolio, "_series",
                             lambda t, price=None, on=None: seen.update(on=on) or {})
         snap = snapshot(date="2026-02-09")
         snap["positions"] = [{"ticker": "SAP.DE", "quantity": 1,
                               "current_price": 100.0, "previous_close": 100.0,
                               "currency": "EUR", "price_date": None}]
-        dashboard.positions(snap, {}, {})
+        portfolio.rows(snap, {}, {})
         assert seen["on"] == "2026-02-09"
 
 
@@ -629,7 +649,8 @@ class TestIncompleteAggregate:
     def _html(self, pair, tmp_path, monkeypatch):
         snap, held = pair
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
-        monkeypatch.setattr(dashboard, "load", lambda: ([snap], held, {}))
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "report.json")
+        monkeypatch.setattr(portfolio, "load", lambda: ([snap], held, {}))
         dashboard.main()
         return (tmp_path / "out.html").read_text(encoding="utf-8")
 
@@ -686,7 +707,8 @@ class TestNothingConverts:
     def _html(self, pair, tmp_path, monkeypatch):
         snap, held = pair
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
-        monkeypatch.setattr(dashboard, "load", lambda: ([snap], held, {}))
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "report.json")
+        monkeypatch.setattr(portfolio, "load", lambda: ([snap], held, {}))
         dashboard.main()
         return (tmp_path / "out.html").read_text(encoding="utf-8")
 
@@ -718,23 +740,23 @@ class TestIncompleteSnapshotsLeaveTheChart:
         return s
 
     def test_a_fully_priced_snapshot_is_complete(self):
-        assert dashboard.complete(self.snap("2026-09-18", 800.0))
+        assert portfolio.complete(self.snap("2026-09-18", 800.0))
 
     def test_an_unpriced_position_makes_it_incomplete(self):
-        assert not dashboard.complete(self.snap("2026-09-18", 0.0, priced=False))
+        assert not portfolio.complete(self.snap("2026-09-18", 0.0, priced=False))
 
     def test_the_partial_point_is_dropped_from_the_series(self):
         snaps = [self.snap("2026-09-16", 800.0),
                  self.snap("2026-09-17", 0.0, priced=False),
                  self.snap("2026-09-18", 810.0)]
-        kept = [s["date"] for s in dashboard.comparable(snaps)]
+        kept = [s["date"] for s in portfolio.comparable(snaps)]
         assert kept == ["2026-09-16", "2026-09-18"]
 
     def test_completeness_needs_no_stored_flag(self):
         """Derived from the positions, so it holds for snapshots written
         before anyone thought to ask - no migration, no absent-means-what."""
         old = self.snap("2026-09-18", 800.0)
-        assert "complete" not in old and dashboard.complete(old)
+        assert "complete" not in old and portfolio.complete(old)
 
     def test_the_dashboard_says_it_left_something_out(
             self, tmp_path, monkeypatch):
@@ -744,7 +766,8 @@ class TestIncompleteSnapshotsLeaveTheChart:
                                  "currency": "EUR", "current_price": None,
                                  "previous_close": None}]
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
-        monkeypatch.setattr(dashboard, "load", lambda: ([partial, snap], held, {}))
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "report.json")
+        monkeypatch.setattr(portfolio, "load", lambda: ([partial, snap], held, {}))
         dashboard.main()
         html = (tmp_path / "out.html").read_text(encoding="utf-8")
         assert "left out of the value chart" in html

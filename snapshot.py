@@ -9,7 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import paths
-import price_history
+from market import prices as price_history
 
 HERE = Path(__file__).parent
 

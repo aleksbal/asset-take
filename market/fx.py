@@ -16,7 +16,7 @@ from datetime import date
 import pandas as pd
 import yfinance as yf
 
-from money import Converted
+from market.money import Converted
 
 HISTORY_PERIOD = "2y"
 

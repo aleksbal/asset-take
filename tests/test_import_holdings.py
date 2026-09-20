@@ -10,7 +10,7 @@ import csv
 import pytest
 
 import portfolio_monitor as pm
-from canonical import Holding
+from holdings.canonical import Holding
 from import_holdings import POSITION_COLUMNS, _de, position_row
 
 

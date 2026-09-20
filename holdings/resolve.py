@@ -20,9 +20,9 @@ from pathlib import Path
 
 import yfinance as yf
 
-import fx
+from market import fx
 import paths
-from quotes import Quote
+from market.quotes import Quote
 
 MAP_PATH = paths.ISIN_MAP
 TOLERANCE = 0.05  # fraction by which a candidate may differ from the broker price

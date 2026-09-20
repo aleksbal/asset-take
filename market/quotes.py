@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
-from money import Money
+from market.money import Money
 
 # Minor unit -> (major currency, scale). GBP is deliberately absent: it is the
 # major unit, and scaling it divides genuine pound prices by a hundred.

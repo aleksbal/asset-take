@@ -10,7 +10,7 @@ from datetime import date, timedelta
 
 import pytest
 
-import trends
+from market import trends
 
 
 def series(values, start=date(2026, 1, 1)):
