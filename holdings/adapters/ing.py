@@ -8,7 +8,7 @@ import csv
 import re
 from pathlib import Path
 
-from canonical import Holding
+from holdings.canonical import Holding
 
 ENCODING = "cp1252"
 HEADER_SIGNATURE = ("ISIN", "Wertpapiername")

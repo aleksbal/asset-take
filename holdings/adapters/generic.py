@@ -11,7 +11,7 @@ import csv
 import re
 from pathlib import Path
 
-from canonical import Holding
+from holdings.canonical import Holding
 from portfolio_monitor import parse_number
 
 # Column aliases, lowercased; first match wins.

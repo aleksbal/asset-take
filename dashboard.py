@@ -10,11 +10,11 @@ import math
 from datetime import date
 from pathlib import Path
 
-import canonical
+from holdings import canonical
 import paths
-import price_history
-import trends
-from money import Converted, Money
+from market import prices as price_history
+from market import trends
+from market.money import Converted, Money
 
 ROOT = Path(__file__).parent
 OUT = paths.DASHBOARD

@@ -8,9 +8,9 @@ from datetime import date
 
 import pytest
 
-import canonical
+from holdings import canonical
 import dashboard
-from canonical import Holding
+from holdings.canonical import Holding
 
 
 def snapshot(**kw):

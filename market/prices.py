@@ -20,7 +20,7 @@ from datetime import date
 import yfinance as yf
 
 import paths
-from quotes import Quote
+from market.quotes import Quote
 
 COLUMNS = ["date", "close", "source"]
 YAHOO, LOCAL = "yahoo", "local"

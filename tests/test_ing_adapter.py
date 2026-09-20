@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import adapters
-from adapters import ing
+from holdings import adapters
+from holdings.adapters import ing
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ing_depotuebersicht.csv"
 STATED_TOTAL = 20451.88  # the Depot-Gesamtwert row

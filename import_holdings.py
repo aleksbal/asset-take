@@ -10,11 +10,11 @@ import csv
 import sys
 from pathlib import Path
 
-import adapters
-import canonical
+from holdings import adapters
+from holdings import canonical
 import paths
 import portfolio_monitor as pm
-import resolve as rz
+from holdings import resolve as rz
 
 ROOT = Path(__file__).parent
 

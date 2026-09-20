@@ -9,7 +9,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-import fx
+from market import fx
 
 
 @pytest.fixture(autouse=True)
