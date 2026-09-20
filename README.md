@@ -53,8 +53,12 @@ Snapshot — daily. Each run stores one dated valuation:
 
     ./.venv/bin/python snapshot.py
 
-Report and dashboard — the run's output is `data/report.json`; the page is
-one program that reads it:
+Report — the run's output. Every figure, and what each parameter means:
+
+    ./.venv/bin/python -m views.portfolio        # writes data/report.json
+
+Dashboard — one program that reads that report. Builds it first if you skip
+the step above:
 
     ./.venv/bin/python dashboard.py && open data/dashboard.html
 
@@ -113,7 +117,7 @@ is what will let a market-wide view reuse it unchanged.
 | `holdings/canonical.py` | the `Holding` record every adapter produces |
 | `holdings/resolve.py` | ISIN → ticker, verified against the broker's own price |
 | `holdings/archive.py` | reads the snapshots and the holdings beside them |
-| `views/portfolio.py` | what is held, valued → `report.json` |
+| `views/portfolio.py` | what is held, valued → `report.json`; `python -m views.portfolio` |
 | `render/html.py` | `report.json` → the page |
 | `import_holdings.py` | export → canonical holdings + pricing input |
 | `snapshot.py` | one dated valuation per run |

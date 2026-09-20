@@ -108,3 +108,24 @@ class TestARowNeedNotBeHeld:
         """It has no weight, because weight is a share of something owned."""
         from render import html
         assert 'class="seg"' not in html.donut([self.unheld()])
+
+
+def test_the_report_can_be_produced_without_a_renderer():
+    """`python -m views.portfolio` writes the report and draws nothing.
+
+    The claim that a run finishes at report.json is only true if it can
+    finish there. Run as a path rather than a module it cannot: Python puts
+    views/ on sys.path instead of the repository root and `import paths`
+    fails before __main__ is reached, which is why the module form is the
+    documented one.
+
+    Asserted on the import rather than the output, so a checkout with no
+    snapshots yet still exercises what this is about. Declining for want of
+    a snapshot is a working entry point; not resolving `paths` is not.
+    """
+    import subprocess
+    import sys
+    done = subprocess.run([sys.executable, "-m", "views.portfolio"],
+                          cwd=ROOT, capture_output=True, text=True)
+    assert "ModuleNotFoundError" not in done.stderr, done.stderr
+    assert "<" not in done.stdout              # a path, never markup

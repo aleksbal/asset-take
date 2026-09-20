@@ -325,3 +325,11 @@ def write(report=None, path=None):
     path.write_text(json.dumps(report, indent=2, default=str),
                     encoding="utf-8")
     return path
+
+
+if __name__ == "__main__":      # python -m views.portfolio
+    # Run as a module, never as a path: `python views/portfolio.py` puts
+    # views/ on sys.path instead of the repository root, and `import paths`
+    # fails before this line is reached. The module form is what makes the
+    # claim true that a run finishes here and the page is optional.
+    print(write())
