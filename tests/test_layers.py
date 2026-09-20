@@ -17,6 +17,8 @@ has a test of its own.
 everything may read it without reaching sideways or up.
 """
 import ast
+
+import pytest
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -129,3 +131,62 @@ def test_the_report_can_be_produced_without_a_renderer():
                           cwd=ROOT, capture_output=True, text=True)
     assert "ModuleNotFoundError" not in done.stderr, done.stderr
     assert "<" not in done.stdout              # a path, never markup
+
+
+class TestThePageIsDrawnFromTheFile:
+    """`report.json` is the run's output and the page is one reader of it.
+
+    Rendering the report still in memory would leave that true only on
+    paper: nothing would exercise the file, and a figure that did not
+    survive the round trip through JSON would be right on a fresh run and
+    wrong on every later read, with no test able to tell.
+    """
+
+    def report(self, **totals):
+        base = {"value": 1234.0, "day": 1.0, "day_pct": 0.1, "pnl": 2.0,
+                "pnl_pct": 0.2, "positions": 1, "top5_weight": 100.0,
+                "days_recorded": 1}
+        base.update(totals)
+        return {"as_of": "2026-09-18", "date": "2026-09-18",
+                "base_currency": "EUR", "indicators": [], "totals": base,
+                "excluded": {"unpriced": [], "cost_unconverted": [],
+                             "no_cost": [], "snapshots_not_comparable": 0},
+                "series": [], "rows": []}
+
+    def test_what_is_on_disk_is_what_is_drawn(self, tmp_path, monkeypatch):
+        import json
+
+        import dashboard
+        report = tmp_path / "report.json"
+        report.write_text(json.dumps(self.report(value=98765.0)))
+        monkeypatch.setattr(dashboard, "REPORT", report)
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+
+        dashboard.main(["--from-report"])
+        assert "98 765" in (tmp_path / "out.html").read_text()
+
+    def test_it_fetches_nothing_to_do_it(self, tmp_path, monkeypatch):
+        """A report already written is a finished fact about its own day.
+
+        `build()` refuses to draw a snapshot against holdings that have moved
+        on, and refusing is right - but it must still be possible to look at
+        what was recorded before they did.
+        """
+        import json
+
+        import dashboard
+        report = tmp_path / "report.json"
+        report.write_text(json.dumps(self.report()))
+        monkeypatch.setattr(dashboard, "REPORT", report)
+        monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
+        monkeypatch.setattr(dashboard.portfolio, "build",
+                            lambda: pytest.fail("rebuilt instead of reading"))
+
+        dashboard.main(["--from-report"])
+
+    def test_it_says_so_when_there_is_no_report(self, tmp_path, monkeypatch):
+        import dashboard
+        monkeypatch.setattr(dashboard, "REPORT", tmp_path / "absent.json")
+        with pytest.raises(SystemExit) as raised:
+            dashboard.main(["--from-report"])
+        assert "no report" in str(raised.value)

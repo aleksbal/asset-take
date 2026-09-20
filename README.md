@@ -57,10 +57,15 @@ Report — the run's output. Every figure, and what each parameter means:
 
     ./.venv/bin/python -m views.portfolio        # writes data/report.json
 
-Dashboard — one program that reads that report. Builds it first if you skip
-the step above:
+Dashboard — one program that reads that report. It values what is held, writes
+the report, then draws what was written:
 
     ./.venv/bin/python dashboard.py && open data/dashboard.html
+    ./.venv/bin/python dashboard.py --from-report   # draw it, fetch nothing
+
+`--from-report` is what makes a report still usable after the holdings have
+moved on. A run refuses to draw a snapshot against holdings that no longer
+match it — but a report already written is a finished fact about its own day.
 
 Both of the above, on a schedule — weekdays at 23:00, after the US close:
 
