@@ -11,6 +11,71 @@ fints. Never `pip install` outside the venv.
     ./.venv/bin/python portfolio_monitor.py -p positions.csv -o report
     FINTS_PRODUCT_ID=<id> ./.venv/bin/python fetch_ing.py --days 30  # cash accounts
 
+## The layers
+
+    render/     the page, and nothing else that knows what HTML is
+    views/      a question -> rows
+    holdings/   facts about what is owned
+    market/     facts about instruments
+    paths.py    where the files live; imports nothing, so it sits below all
+
+Four rules. `tests/test_layers.py` enforces the first and the last, because a
+rule that lives only here erodes the first time someone is in a hurry and the
+erosion is invisible in review.
+
+1. A layer only uses layers below it.
+2. Store what you measured. Work everything else out fresh.
+3. Missing means missing. Never zero, never a rate of 1.0.
+4. Only `render/` knows what HTML is.
+
+`holdings` sits *above* `market` rather than beside it: resolving a broker
+export to a listing means fetching a price and checking it against the
+broker's own. The direction that matters is the other one - `market` never
+learns that a portfolio exists, which is what will let a market-wide view
+reuse it unchanged, and that has a test of its own.
+
+`portfolio_monitor.py` is at the root and fits nowhere: it fetches prices,
+reads the positions file, calculates the report and runs a command line, which
+belong in `market/`, `holdings/`, `views/` and nowhere. It is split on its own,
+after the layering is real and guarded, because everything depends on it.
+
+## The run ends at report.json
+
+    snapshot.py         -> history/*.json, prices/*.csv
+    views/portfolio.py  -> report.json        the output
+    render/html.py      -> dashboard.html     one reader of it
+
+The page is a program that reads the report, not the destination. Before this,
+figures were computed and thrown away, so the only question that could be
+asked was the one the page already answered. Anything else - a different view,
+a screen, a model - now reads the same file.
+
+A row is one instrument. It always carries a price and whatever parameters the
+series supported. It carries a `position` block only where something is held,
+absent rather than zeroed for anything that is not, which is what lets a
+market-wide view emit the same shape for instruments nobody owns.
+
+## Parameters
+
+One entry per parameter in `market/indicators.py`. Adding one is writing the
+maths in `trends.py` and adding an entry: it then appears in the report, in
+the page and in anything that filters rows, without those being touched. It
+used to take five edits, three of them inside the renderer, which is what made
+the page look like the bottleneck when the coupling was.
+
+`needs` names the inputs a parameter requires. Everything there needs only
+closes, so everything runs on any instrument, held or not. A parameter needing
+a cost basis would say so and be absent from rows without one, rather than
+computed from a substituted zero.
+
+The registry carries what a parameter *means* - label, unit, a sentence for
+its reader - and never how to print it. The renderer keys on `unit`, never on
+a name: `percent` is coloured by sign, `fall` only past a threshold because a
+drawdown is always negative and its sign says nothing, `index` and `days` are
+left neutral. `inputs()` carries the price used and how many closes fed the
+calculation; those describe the calculation rather than the instrument, so
+they travel in the report without becoming a column.
+
 ## How the pieces relate
 
 `portfolio_monitor.py` started as the bundled `stock-portfolio-monitor` skill
@@ -21,9 +86,9 @@ assumed German notation unconditionally and read `30.0` as `300`.
 `snapshot.py` imports it and reuses its pricing functions; it must not fetch
 prices itself.
 
-Ingestion is `import_holdings.py`: adapters in `adapters/` identify a broker
-export by content (never filename), emit `Holding` objects from `canonical.py`,
-and `resolve.py` maps ISIN to a Yahoo ticker. Adding a broker means one new
+Ingestion is `import_holdings.py`: adapters in `holdings/adapters/` identify a
+broker export by content (never filename), emit `Holding` objects from
+`holdings/canonical.py`, and `holdings/resolve.py` maps ISIN to a Yahoo ticker. Adding a broker means one new
 adapter with `detect()` and `parse()`; nothing else changes.
 
 Number parsing is locale-ambiguous by nature: `1,234` is 1234 in English and
@@ -64,8 +129,8 @@ purpose - and the hybrid does not look wrong: every figure renders, and a
 position valued on 300 shares against the cost of 640 reported a 44% loss
 neither file states. Sold positions fared worse: absent from the map they lost
 their name and their cost, and were reported as holdings stating no cost basis,
-which is a different claim from not being held. `mismatch()` compares the two
-before anything is rendered and the run refuses rather than blending vintages.
+which is a different claim from not being held. `views.portfolio.mismatch()` compares the two
+before anything is built and the run refuses rather than blending vintages.
 It compares quantities, not just tickers - buying more of something already
 held leaves the ticker sets equal while making every derived figure for that
 position wrong, and that is the case that produced the 44%. The value-over-time
@@ -88,7 +153,7 @@ Three paths read prices and each builds a Quote:
 
 - `resolve._price()` - `fast_info`, for verifying a candidate
 - `portfolio_monitor.fetch_prices()` - `yf.download`, for the daily valuation
-- `price_history._fetch()` - `Ticker.history`, for seeding a series
+- `market/prices.py:_fetch()` - `Ticker.history`, for seeding a series
 
 Six review rounds found the same defect in six places before this type
 existed: a price reaching storage or valuation with its unit left behind,
@@ -229,7 +294,8 @@ only thing that makes day-over-day and drift analysis possible, and it cannot
 be backfilled — a missed day is gone. Read several files, not just today's.
 
 Do not confuse it with `portfolio_monitor.py --history`, which is unrelated:
-that file tracks only consecutive-move direction for alerts.
+that file tracks only consecutive-move direction for alerts. The per-listing
+series is `market/prices.py`, renamed from `price_history.py` for that reason.
 
 `bin/daily.sh` takes one day's snapshot and re-renders, and
 `bin/install-schedule.sh` puts it on launchd for weekdays. Weekdays because a
