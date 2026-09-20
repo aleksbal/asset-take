@@ -20,6 +20,9 @@ SERIES = [("#2a78d6", "#3987e5"), ("#eb6834", "#d95926"), ("#1baf7a", "#199e70")
 OTHER = ("#8a8985", "#6f6e6a")
 
 
+DASH = '<td class="n none">\u2014</td>'
+
+
 def num(x, dp=0):
     return f"{x:,.{dp}f}".replace(",", " ")
 
@@ -31,7 +34,7 @@ def cell(value, unit):
     are different claims, and a zero is indistinguishable from a real one.
     """
     if value is None:
-        return '<td class="n none">—</td>'
+        return DASH
     if unit == "percent":
         return f'<td class="n {"up" if value >= 0 else "dn"}">{value:+.1f}%</td>'
     # A fall is never positive, so its sign says nothing and coloring by it
@@ -85,7 +88,7 @@ def line_chart(series, w=760, h=220, pad=(16, 56, 28, 8)):
 
 def donut(rows, size=220, thick=26):
     """Top 7 by weight; the remainder folds into Other. Hues are never cycled."""
-    rows = [r for r in rows if r["position"].get("weight") is not None]
+    rows = [r for r in rows if (r.get("position") or {}).get("weight") is not None]
     shown = rows[:7]
     rest = sum(r["position"]["weight"] for r in rows[7:])
     slices = [(r["name"], r["position"]["weight"], SERIES[i]) for i, r in enumerate(shown)]
@@ -115,28 +118,36 @@ def donut(rows, size=220, thick=26):
 
 
 def _row(r, units):
-    """One instrument. Parameters in whatever order the report declares them."""
+    """One instrument. Parameters in whatever order the report declares them.
+
+    The ownership columns - quantity, value, weight, day, P&L - come from the
+    row's `position`, which a row need not have. An instrument nobody owns
+    renders every one of them as an em dash rather than a zero, and its
+    parameters render exactly as a held one's do. That is the shape a
+    market-wide view emits, so the renderer must not assume the block is
+    there.
+    """
     held = r.get("position") or {}
     name = (f'<td class="nm" title="{r["name"]}">{r["name"]}'
             f'<span class="tk">{r["ticker"]}</span></td>')
-    qty = f'<td class="n">{held.get("quantity", 0):g}</td>'
+    qty = (f'<td class="n">{held["quantity"]:g}</td>' if "quantity" in held
+           else DASH)
     if not r.get("priced"):
         return (f'<tr class="unpriced">{name}{qty}'
                 f'<td class="n" colspan="{5 + len(units)}">no price '
                 f'available</td></tr>')
-    pnl = held.get("pnl")
+    value, weight = held.get("value"), held.get("weight")
+    day, pnl = held.get("day_pct"), held.get("pnl")
     return (f'<tr>{name}{qty}'
             f'<td class="n">{num(r["price"]["amount"], 2)} '
             f'{r["price"]["currency"]}</td>'
-            f'<td class="n">{num(held["value"])}</td>'
-            f'<td class="n w"><span class="bar" '
-            f'style="--p:{held["weight"]:.1f}%"></span>{held["weight"]:.1f}%</td>'
-            f'<td class="n {"up" if held["day_pct"] >= 0 else "dn"}">'
-            f'{held["day_pct"]:+.2f}%</td>'
-            f'<td class="n {"up" if (pnl or 0) >= 0 else "dn"}">'
-            + (f'{num(pnl)} ({held["pnl_pct"]:+.1f}%)' if pnl is not None
-               else "—")
-            + '</td>'
+            + (f'<td class="n">{num(value)}</td>' if value is not None else DASH)
+            + (f'<td class="n w"><span class="bar" style="--p:{weight:.1f}%">'
+               f'</span>{weight:.1f}%</td>' if weight is not None else DASH)
+            + (f'<td class="n {"up" if day >= 0 else "dn"}">{day:+.2f}%</td>'
+               if day is not None else DASH)
+            + (f'<td class="n {"up" if pnl >= 0 else "dn"}">{num(pnl)} '
+               f'({held["pnl_pct"]:+.1f}%)</td>' if pnl is not None else DASH)
             + "".join(cell(r["values"].get(k), u) for k, u in units)
             + '</tr>')
 

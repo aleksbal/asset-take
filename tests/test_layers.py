@@ -73,3 +73,38 @@ class TestOnlyTheRendererKnowsWhatHtmlIs:
                     assert tag not in text, (
                         f"{path.relative_to(ROOT)} contains {tag!r}; "
                         f"only render/ draws")
+
+
+class TestARowNeedNotBeHeld:
+    """The shape a market-wide view will emit: an instrument with a price and
+    parameters, and no position at all. Nothing in `render/` may assume the
+    ownership block is there, or the claim that both views share one shape is
+    only true until something reads the file."""
+
+    def unheld(self):
+        return {"ticker": "X", "name": "X Corp", "priced": True,
+                "cost_unconverted": False, "values": {"rsi": 55.0},
+                "price": {"amount": 10.0, "currency": "USD"}}
+
+    def test_it_renders_with_every_declared_column(self):
+        from market import indicators as ix
+        from render import html
+        markup = html.table([self.unheld()])
+        assert markup.count("<td") == markup.count("<th") - markup.count("<thead")
+        for declared in ix.declared():
+            assert declared["label"] in markup
+
+    def test_its_parameters_still_show(self):
+        from render import html
+        assert "55" in html.table([self.unheld()])
+
+    def test_the_ownership_columns_are_absent_not_zero(self):
+        """A zero quantity is a claim about a holding; there is no holding."""
+        from render import html
+        markup = html.table([self.unheld()])
+        assert ">0<" not in markup and "0.0%" not in markup
+
+    def test_the_allocation_chart_leaves_it_out(self):
+        """It has no weight, because weight is a share of something owned."""
+        from render import html
+        assert 'class="seg"' not in html.donut([self.unheld()])

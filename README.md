@@ -53,7 +53,8 @@ Snapshot — daily. Each run stores one dated valuation:
 
     ./.venv/bin/python snapshot.py
 
-Dashboard — value over time, allocation, positions:
+Report and dashboard — the run's output is `data/report.json`; the page is
+one program that reads it:
 
     ./.venv/bin/python dashboard.py && open data/dashboard.html
 
@@ -63,8 +64,12 @@ Both of the above, on a schedule — weekdays at 23:00, after the US close:
     bin/install-schedule.sh --remove
 
 The history series cannot be backfilled, so a day nobody ran the snapshot is
-gone. launchd rather than cron: it catches up a run missed because the Mac was
-asleep. Output goes to `data/logs/daily.log`.
+gone. launchd rather than cron, because cron simply skips a run the Mac slept
+through. A caught-up run is *not* taken, though: `snapshot.py` dates its
+output by the clock, so a Friday job waking on Saturday would file Friday's
+closes under Saturday, and that cannot be corrected afterwards. `bin/daily.sh`
+runs only inside its own slot and logs why it declined. Output goes to
+`data/logs/daily.log`.
 
 Text report:
 
@@ -87,14 +92,32 @@ entirely.
 Paths come from `paths.py`. New code must take them from there; a hardcoded
 `Path("holdings.csv")` would write to the repo root and become committable.
 
+Code sits in four layers, and each may only use the ones below it:
+
+    render/     the page, and nothing else that knows what HTML is
+    views/      a question -> rows
+    holdings/   facts about what is owned
+    market/     facts about instruments
+
+`tests/test_layers.py` fails on an import pointing the wrong way, and on
+markup below `render/`. `market/` never learns that a portfolio exists, which
+is what will let a market-wide view reuse it unchanged.
+
 | Code | |
 |---|---|
-| `adapters/` | one module per broker: `detect(path)`, `parse(path)` |
-| `canonical.py` | the `Holding` record every adapter produces |
-| `resolve.py` | ISIN → ticker, verified against the broker's own price |
+| `market/quotes.py` `money.py` `fx.py` | a price with its unit; an amount and a converted one; rates |
+| `market/prices.py` | one close series per listing |
+| `market/trends.py` | the maths: drawdown, moving averages, RSI |
+| `market/indicators.py` | **one entry per parameter** — see below |
+| `holdings/adapters/` | one module per broker: `detect(path)`, `parse(path)` |
+| `holdings/canonical.py` | the `Holding` record every adapter produces |
+| `holdings/resolve.py` | ISIN → ticker, verified against the broker's own price |
+| `holdings/archive.py` | reads the snapshots and the holdings beside them |
+| `views/portfolio.py` | what is held, valued → `report.json` |
+| `render/html.py` | `report.json` → the page |
 | `import_holdings.py` | export → canonical holdings + pricing input |
 | `snapshot.py` | one dated valuation per run |
-| `dashboard.py` | renders the HTML dashboard |
+| `dashboard.py` | builds the report, then draws it |
 | `paths.py` | where data lives |
 
 | Data (gitignored) | |
@@ -104,11 +127,37 @@ Paths come from `paths.py`. New code must take them from there; a hardcoded
 | `data/holdings.csv` | canonical holdings, generated |
 | `data/positions.csv` | pricing input, generated |
 | `data/history/` | dated snapshots; the series behind trend analysis |
+| `data/prices/` | one close series per listing |
+| `data/report.json` | the run's output — every figure, with what each means |
+
+## Adding a parameter
+
+One entry in `market/indicators.py`:
+
+    MY_METRIC = Indicator(
+        key="my_metric", label="My metric", unit="percent",
+        means="what a reader needs to know about this number",
+        needs=("closes",),
+        compute=lambda closes, live, on: trends.my_metric(closes, live))
+
+Add it to `ALL` and it appears in `report.json`, as a column on the page, and
+in anything that filters rows. Nothing else is touched — the renderer builds
+its columns from the report's own declaration and formats by `unit`, never by
+name.
+
+`needs` states the inputs required. Everything shipped needs only a series of
+closes, so everything runs on any instrument, held or not. A parameter needing
+a cost basis would say so and be absent from rows without one, rather than
+computed from a substituted zero.
+
+The registry carries what a parameter *means* and never how to print it.
+Decimal places, an em dash for an absent value and which side is green are
+display decisions, and they live in `render/`.
 
 ## Adding a broker
 
-One file in `adapters/` exposing `detect(path) -> bool` and
-`parse(path) -> [Holding]`, registered in `adapters/__init__.py` under
+One file in `holdings/adapters/` exposing `detect(path) -> bool` and
+`parse(path) -> [Holding]`, registered in `holdings/adapters/__init__.py` under
 `SPECIFIC`. Detection reads file content, never the filename. `FALLBACK` is
 consulted only after every specific adapter declines, so a generic reader
 never claims a file a dedicated one parses better.
@@ -117,7 +166,7 @@ Supply `broker_price` if the export states a valuation. It is what makes
 resolution verifiable, and it is the main advantage a specific adapter has
 over the generic reader.
 
-Everything format-specific belongs inside the adapter. `adapters/ing.py`
+Everything format-specific belongs inside the adapter. `holdings/adapters/ing.py`
 absorbs cp1252 encoding, a preamble before the header, a totals row at the
 end, four columns all named `Währung`, and German decimal notation — none of
 which is visible anywhere else in the codebase.

@@ -17,6 +17,7 @@ from market import indicators as ix
 from market import prices as price_history
 from market.money import Converted, Money
 
+
 def mismatch(snap, by_ticker):
     """How a snapshot's holdings differ from the ones on file, if at all.
 
@@ -324,7 +325,3 @@ def write(report=None, path=None):
     path.write_text(json.dumps(report, indent=2, default=str),
                     encoding="utf-8")
     return path
-
-
-if __name__ == "__main__":
-    print(write())
