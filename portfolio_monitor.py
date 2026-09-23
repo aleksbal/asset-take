@@ -12,7 +12,7 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -329,8 +329,9 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                 # position a hundredfold. The unit is recorded at resolution
                 # so this does not depend on a lookup that can fail.
                 unit = pos.quote_currency or _quote_currency(pos.ticker)
+                session = closes.index[-1].date()
                 quote = Quote.from_provider(pos.current_price, unit,
-                                            session=closes.index[-1].date())
+                                            session=session)
                 if quote is None:
                     # An unconfirmed unit is indistinguishable from a major
                     # one, so the position is left unpriced. The dashboard
@@ -348,22 +349,24 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                     # point-in-time valuation and wants it.
                     pos.price_date = (quote.session.isoformat()
                                       if quote.settled else None)
-                    # Volume carries no currency, so it needs no Quote - but
-                    # the same settled/in-progress distinction applies: an
-                    # unsettled session's volume is a partial count, not the
-                    # day's total, and would understate every average it
-                    # later feeds.
-                    if quote.settled and 'Volume' in ticker_data:
-                        try:
-                            vol = float(
-                                ticker_data['Volume'].loc[closes.index[-1]])
-                            # A missing volume arrives as NaN, not an
-                            # exception - float(nan) succeeds. Left as NaN it
-                            # would reach volume._write()'s round() and crash
-                            # the run after the snapshot was already written.
-                            pos.volume = None if vol != vol else vol
-                        except (KeyError, ValueError, TypeError):
-                            pos.volume = None
+
+                # Volume carries no currency, so it needs no Quote - and
+                # must not be gated behind one resolving. A legacy position
+                # with no quote_currency and a failed lookup leaves price
+                # unresolved (quote is None above), but that says nothing
+                # about whether the session settled, which volume alone
+                # depends on.
+                settled = session < date.today()
+                if settled and 'Volume' in ticker_data:
+                    try:
+                        vol = float(ticker_data['Volume'].loc[closes.index[-1]])
+                        # A missing volume arrives as NaN, not an exception -
+                        # float(nan) succeeds. Left as NaN it would reach
+                        # volume._write()'s round() and crash the run after
+                        # the snapshot was already written.
+                        pos.volume = None if vol != vol else vol
+                    except (KeyError, ValueError, TypeError):
+                        pos.volume = None
 
             # Get company name
             try:

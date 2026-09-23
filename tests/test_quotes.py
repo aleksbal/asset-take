@@ -172,6 +172,27 @@ class TestUnconfirmedUnit:
         [out] = pm.fetch_prices([pos])
         assert out.current_price is None
 
+    def test_volume_is_captured_even_when_the_unit_cannot_be(self, monkeypatch):
+        """Volume carries no currency, so it needs no Quote - an unresolved
+        unit must not also withhold volume, which does not depend on it."""
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0],
+                              "Volume": [1_000_000.0, 1_200_000.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Blind:
+            fast_info = {}
+            info = {}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Blind())
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.current_price is None            # unit still unresolved
+        assert out.volume == pytest.approx(1_200_000.0)
+
     def test_a_recorded_unit_survives_a_failed_lookup(self, pm):
         """This is the point of storing it: resolution already established the
         unit, so the valuation layer never depends on the network for it."""
