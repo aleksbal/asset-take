@@ -677,7 +677,7 @@ class TestSeriesIncludesVolume:
     def test_a_volume_series_produces_a_volume_trend(self, closes, monkeypatch):
         from datetime import date, timedelta
         start = date(2025, 1, 1)
-        volumes = {(start + timedelta(days=i)).isoformat(): 1_000_000.0
+        volumes = {(start + timedelta(days=i)).isoformat(): (1_000_000.0, "yahoo")
                    for i in range(20)}
         monkeypatch.setattr(portfolio.volume_history, "load",
                             lambda t: dict(volumes))

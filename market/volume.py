@@ -3,13 +3,18 @@
 our own runs.
 
 Mirrors `market.prices`: one file per listing, keyed by the session the
-figure belongs to, extended once a day. It is deliberately smaller. A price
-needs a `Quote` because its unit can be wrong in a way that is invisible
-without one - a share count carries no currency, so there is nothing to
-normalise and nothing to get wrong that way. And a split that doubles the
-share count is a real change in how much is trading, not a scale error to
-repair, so unlike `prices.refresh()` there is no re-seed here: a fetched
-volume is always taken at face value.
+figure belongs to, extended once a day, and marked with where each row came
+from - a seed can fail transiently while the daily figure still arrives, and
+without that mark a one-row local series reads as already seeded, so the
+full history is never fetched again.
+
+It is smaller than `market.prices` in one respect: a price needs a `Quote`
+because its unit can be wrong in a way that is invisible without one - a
+share count carries no currency, so there is nothing to normalise and
+nothing to get wrong that way. And a split that doubles the share count is a
+real change in how much is trading, not a scale error to repair, so unlike
+`prices.refresh()` there is no re-seed here: a fetched volume is always
+taken at face value.
 """
 import csv
 import os
@@ -21,7 +26,8 @@ import yfinance as yf
 
 import paths
 
-COLUMNS = ["date", "volume"]
+COLUMNS = ["date", "volume", "source"]
+YAHOO, LOCAL = "yahoo", "local"
 BACKFILL_PERIOD = "2y"
 
 
@@ -31,7 +37,7 @@ def path_for(ticker):
 
 
 def load(ticker):
-    """The stored series as {date: volume}, empty if we hold none."""
+    """The stored series as {date: (volume, source)}, empty if we hold none."""
     p = path_for(ticker)
     if not p.exists():
         return {}
@@ -39,7 +45,7 @@ def load(ticker):
     with open(p, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             try:
-                out[row["date"]] = float(row["volume"])
+                out[row["date"]] = (float(row["volume"]), row.get("source", ""))
             except (TypeError, ValueError):
                 continue        # a truncated write should not poison the series
     return out
@@ -55,7 +61,9 @@ def _write(ticker, series):
             w = csv.DictWriter(f, fieldnames=COLUMNS)
             w.writeheader()
             for day in sorted(series):
-                w.writerow({"date": day, "volume": round(series[day])})
+                volume, source = series[day]
+                w.writerow({"date": day, "volume": round(volume),
+                           "source": source})
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)
@@ -65,18 +73,24 @@ def _write(ticker, series):
 
 
 def backfill(ticker, fetch=None):
-    """Seed a listing that has no series yet. Returns the rows added.
+    """Seed a listing that has no provider history yet. Returns rows added.
 
-    A listing we already hold any history for is left alone: there is only
-    ever one source here, so unlike `prices.backfill()` there is no need to
-    tell a seeded row from a locally recorded one.
+    A seed can fail transiently while the daily figure still arrives via
+    `record()`, leaving a one-row local series. Testing for any series at
+    all would read that as seeded and never retry - so, like
+    `prices.backfill()`, this tests for a provider-sourced row specifically,
+    and a row recorded locally in the meantime is kept, not overwritten.
     """
-    if load(ticker):
+    series = load(ticker)
+    if any(source == YAHOO for _, source in series.values()):
         return 0
     rows = _fetched(ticker, fetch)
     if not rows:
         return 0
-    _write(ticker, rows)
+    merged = {day: (vol, YAHOO) for day, vol in rows.items()}
+    for day, entry in series.items():
+        merged.setdefault(day, entry)
+    _write(ticker, merged)
     return len(rows)
 
 
@@ -93,7 +107,7 @@ def record(ticker, volume, on=None):
     series = load(ticker)
     if day in series:
         return False
-    series[day] = volume
+    series[day] = (volume, LOCAL)
     _write(ticker, series)
     return True
 
@@ -126,7 +140,8 @@ def _fetched(ticker, fetch):
 
 
 def update(volumes, dates=None, fetch=None, on=None):
-    """Seed any listing we hold no series for, then record today's volume.
+    """Seed any listing we hold no provider history for, then record today's
+    volume.
 
     `volumes` maps ticker to its most recent traded volume, `dates` to the
     session that volume belongs to - the same two-map contract as

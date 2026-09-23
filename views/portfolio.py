@@ -145,7 +145,8 @@ def _series(ticker, price=None, on=None):
     # Volume has no live figure to fold in the way price does: it is only
     # ever recorded once a session settles, so unlike `price` there is no
     # today's-number to compare a stored average against.
-    volumes = list(volume_history.load(ticker).items())
+    volumes = [(day, vol) for day, (vol, _) in
+              volume_history.load(ticker).items()]
     return {**ix.inputs(series, live=price, live_on=session),
             **ix.values(series, live=price, live_on=session, volumes=volumes)}
 

@@ -30,11 +30,15 @@ class TestSeeding:
         assert volume.backfill("SAP.DE", fetch=fetch_ok) == 2
         assert set(volume.load("SAP.DE")) == {"2026-09-16", "2026-09-17"}
 
-    def test_a_listing_we_already_hold_is_left_alone(self):
+    def test_a_seeded_row_is_marked_as_the_providers(self):
+        volume.backfill("SAP.DE", fetch=fetch_ok)
+        assert volume.load("SAP.DE")["2026-09-16"][1] == volume.YAHOO
+
+    def test_a_seeded_listing_is_left_alone(self):
         volume.backfill("SAP.DE", fetch=fetch_ok)
 
         def fetch_different(ticker):
-            raise AssertionError("must not re-fetch an existing series")
+            raise AssertionError("must not re-fetch a seeded series")
 
         assert volume.backfill("SAP.DE", fetch=fetch_different) == 0
 
@@ -50,19 +54,24 @@ class TestSeeding:
 class TestRecording:
     def test_records_todays_volume(self):
         assert volume.record("SAP.DE", 500_000.0, on=date(2026, 9, 18))
-        assert volume.load("SAP.DE")["2026-09-18"] == 500_000.0
+        assert volume.load("SAP.DE")["2026-09-18"] == (500_000.0, volume.LOCAL)
 
     def test_a_second_run_on_one_day_does_not_duplicate(self):
         volume.record("SAP.DE", 500_000.0, on=date(2026, 9, 18))
         assert not volume.record("SAP.DE", 999.0, on=date(2026, 9, 18))
         series = volume.load("SAP.DE")
-        assert len(series) == 1 and series["2026-09-18"] == 500_000.0
+        assert len(series) == 1 and series["2026-09-18"][0] == 500_000.0
 
     def test_a_missing_volume_is_not_recorded_as_zero(self):
         """The provider can fail to report volume for one ticker - that is
         not a session with no trading."""
         assert not volume.record("SAP.DE", None, on=date(2026, 9, 18))
         assert volume.load("SAP.DE") == {}
+
+    def test_recording_preserves_a_seeded_day(self):
+        volume.backfill("SAP.DE", fetch=fetch_ok)
+        volume.record("SAP.DE", 555.0, on=date(2026, 9, 16))
+        assert volume.load("SAP.DE")["2026-09-16"] == (1_000_000.0, volume.YAHOO)
 
 
 class TestDailyUpdate:
@@ -89,6 +98,34 @@ class TestDailyUpdate:
         assert seeded == 1 and recorded == 2
 
 
+class TestSeedRetry:
+    """A seed can fail transiently while the daily figure still arrives via
+    `record()`, leaving a one-row local series. Treating any row at all as
+    seeded would read that as complete and never fetch the 2-year history -
+    the exact defect `market.prices.backfill()` guards against with the
+    same source mark."""
+
+    def test_a_local_only_series_is_still_seeded_later(self):
+        volume.record("SAP.DE", 500_000.0, on=date(2026, 9, 18))
+        assert volume.backfill("SAP.DE", fetch=fetch_ok) == 2
+        assert len(volume.load("SAP.DE")) == 3
+
+    def test_the_recorded_row_survives_the_late_seed(self):
+        volume.record("SAP.DE", 500_000.0, on=date(2026, 9, 18))
+        volume.backfill("SAP.DE", fetch=fetch_ok)
+        assert volume.load("SAP.DE")["2026-09-18"] == (500_000.0, volume.LOCAL)
+
+    def test_a_failed_seed_then_a_record_still_retries(self):
+        seeded, _ = volume.update({"SAP.DE": 500_000.0},
+                                  dates={"SAP.DE": "2026-09-18"},
+                                  fetch=fetch_none)
+        assert seeded == 0
+        seeded, _ = volume.update({"SAP.DE": 600_000.0},
+                                  dates={"SAP.DE": "2026-09-19"},
+                                  fetch=fetch_ok)
+        assert seeded == 1
+
+
 class TestStoredFormat:
     def test_series_is_written_in_date_order(self):
         volume.record("SAP.DE", 3.0, on=date(2026, 9, 18))
@@ -101,5 +138,5 @@ class TestStoredFormat:
     def test_a_corrupt_row_does_not_poison_the_series(self):
         volume.backfill("SAP.DE", fetch=fetch_ok)
         p = volume.path_for("SAP.DE")
-        p.write_text(p.read_text() + "not-a-date,not-a-number\n")
+        p.write_text(p.read_text() + "not-a-date,not-a-number,local\n")
         assert len(volume.load("SAP.DE")) == 2
