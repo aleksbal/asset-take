@@ -145,9 +145,15 @@ def _row(r, units):
     qty = (f'<td class="n">{held["quantity"]:g}</td>' if "quantity" in held
            else DASH)
     if not r.get("priced"):
+        # Only the price-derived ownership columns are unavailable here -
+        # value, weight, day and P&L all need today's price or FX rate.
+        # The trend parameters come from the stored series, independent of
+        # today's fetch, so volume_trend in particular can still be there
+        # for a row with no price at all; spanning past them would hide it.
         return (f'<tr class="unpriced">{name}{qty}'
-                f'<td class="n" colspan="{5 + len(units)}">no price '
-                f'available</td></tr>')
+                f'<td class="n" colspan="5">no price available</td>'
+                + "".join(cell(r["values"].get(k), u) for k, u in units)
+                + '</tr>')
     value, weight = held.get("value"), held.get("weight")
     day, pnl = held.get("day_pct"), held.get("pnl")
     return (f'<tr>{name}{qty}'

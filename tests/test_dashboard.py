@@ -558,14 +558,30 @@ class TestTrendColumns:
         """What a column means travels with it, for the reader and the tooltip."""
         assert ix.RSI.means in page.table([])
 
-    def test_an_unpriced_row_still_spans_the_full_table(self):
-        """The colspan has to match the header, or the row shears sideways."""
+    def test_an_unpriced_rows_ownership_columns_still_add_up(self):
+        """The colspan covers only the price-derived columns - name, qty
+        and every parameter cell render on their own, so together they
+        still have to match the header, or the row shears sideways."""
         markup = page.table([])
         header = markup.count("<th") - markup.count("<thead")   # <thead matches <th
         units = [(d["key"], d["unit"]) for d in ix.declared()]
         row = page._row({"priced": False, "name": "X", "ticker": "X",
                          "values": {}, "position": {"quantity": 1}}, units)
-        assert int(row.split('colspan="')[1].split('"')[0]) == header - 2
+        colspan = int(row.split('colspan="')[1].split('"')[0])
+        # Every <td> (name, qty, the 7-wide span, one per parameter) minus
+        # the extra 4 columns the span covers beyond its own single <td>.
+        individual_cells = row.count("<td") - 1
+        assert colspan + individual_cells == header
+
+    def test_an_unpriced_row_still_shows_a_volume_only_parameter(self):
+        """volume_trend comes from the stored volume series, independent of
+        today's price or FX rate - an unpriced row must not hide it behind
+        the same "no price available" span that covers value and P&L."""
+        units = [(d["key"], d["unit"]) for d in ix.declared()]
+        row = page._row({"priced": False, "name": "X", "ticker": "X",
+                         "values": {"volume_trend": 42.0},
+                         "position": {"quantity": 1}}, units)
+        assert "+42.0%" in row
 
 
 class TestTrendUsesTheDisplayedPrice:
