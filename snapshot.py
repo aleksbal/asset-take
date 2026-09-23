@@ -10,6 +10,7 @@ from pathlib import Path
 
 import paths
 from market import prices as price_history
+from market import volume as volume_history
 
 HERE = Path(__file__).parent
 
@@ -45,6 +46,10 @@ seeded, recorded, rescaled = price_history.update(
     {p.ticker: p.current_price for p in report.positions},
     dates={p.ticker: p.price_date for p in report.positions if p.price_date},
     units={p.ticker: p.quote_currency for p in report.positions if p.quote_currency})
+# Per-listing volume series, same session as the price it rode in with.
+vol_seeded, vol_recorded = volume_history.update(
+    {p.ticker: p.volume for p in report.positions if p.volume is not None},
+    dates={p.ticker: p.price_date for p in report.positions if p.price_date})
 
 print(f"{path}  total {report.total_value:,.2f} {base}  "
       f"({report.daily_change_pct:+.2f}%)  [{len(list(out.glob('*.json')))} days]")
@@ -53,3 +58,6 @@ if seeded:
 if rescaled:
     print(f"price history: re-seeded {rescaled} series after a likely corporate action")
 print(f"price history: {recorded} close(s) recorded in {paths.PRICES}")
+if vol_seeded:
+    print(f"volume history: seeded {vol_seeded} listing(s) from the provider")
+print(f"volume history: {vol_recorded} session(s) recorded in {paths.VOLUMES}")

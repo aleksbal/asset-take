@@ -16,10 +16,11 @@ POSITIONS = DATA / "positions.csv"  # pricing input, generated
 ISIN_MAP = DATA / "isin_map.csv"  # your corrections — the one you edit
 HISTORY = DATA / "history"        # daily snapshots
 PRICES = DATA / "prices"          # per-listing price series
+VOLUMES = DATA / "volumes"        # per-listing daily volume series
 DASHBOARD = DATA / "dashboard.html"
 CONFIG = DATA / "config.json"   # base currency, alert thresholds, preferences
 
-for d in (DATA, IMPORTS, HISTORY, PRICES):
+for d in (DATA, IMPORTS, HISTORY, PRICES, VOLUMES):
     d.mkdir(parents=True, exist_ok=True)
 
 REPORT = DATA / "report.json"   # the run's output; the page is one reader

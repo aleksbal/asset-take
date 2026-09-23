@@ -75,6 +75,52 @@ class TestValuationLayerApplies:
         assert out.current_price == pytest.approx(4208.0)
 
 
+class TestVolumeCapture:
+    """Volume rides in on the same download as price, for the same settled
+    session - it needs no Quote, since a share count carries no currency."""
+
+    @pytest.fixture
+    def pm(self, monkeypatch):
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0],
+                              "Volume": [1_000_000.0, 1_200_000.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Quote:
+            fast_info = {"currency": "GBp"}
+            info = {"shortName": "British American Tobacco"}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
+        return pm
+
+    def test_the_settled_sessions_volume_is_captured(self, pm):
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.volume == pytest.approx(1_200_000.0)
+
+    def test_no_volume_column_leaves_it_unset_not_zero(self, monkeypatch):
+        """The download this test doubles for has no Volume column at all -
+        the ordinary shape whenever the provider does not return one."""
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Quote:
+            fast_info = {"currency": "GBp"}
+            info = {"shortName": "British American Tobacco"}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.volume is None
+
+
 class TestUnconfirmedUnit:
     """A failed unit lookup looks exactly like a major-unit quote. Assuming
     the latter values a pence quote as pounds, so the position is left

@@ -12,7 +12,7 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -48,6 +48,10 @@ class Position:
     previous_close: Optional[float] = None
     price_date: Optional[str] = None
     name: Optional[str] = None
+    # The settled session's traded volume, alongside price_date since it is
+    # only ever recorded for the same session - an in-progress day's volume
+    # is a partial count, not a day's total.
+    volume: Optional[float] = None
 
 
 @dataclass
@@ -344,6 +348,17 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                     # point-in-time valuation and wants it.
                     pos.price_date = (quote.session.isoformat()
                                       if quote.settled else None)
+                    # Volume carries no currency, so it needs no Quote - but
+                    # the same settled/in-progress distinction applies: an
+                    # unsettled session's volume is a partial count, not the
+                    # day's total, and would understate every average it
+                    # later feeds.
+                    if quote.settled and 'Volume' in ticker_data:
+                        try:
+                            pos.volume = float(
+                                ticker_data['Volume'].loc[closes.index[-1]])
+                        except (KeyError, ValueError, TypeError):
+                            pos.volume = None
 
             # Get company name
             try:
