@@ -530,6 +530,24 @@ class TestTrendColumns:
         cell = page.cell(82.0, "index")
         assert "up" not in cell and "dn" not in cell
 
+    def test_a_value_rounding_to_zero_carries_no_sign(self):
+        """"-0.0%" and "+0.0%" both claim a direction the displayed
+        magnitude does not show, for percent, fall or volume alike."""
+        for unit in ("percent", "fall", "volume"):
+            assert page.cell(-0.02, unit) == '<td class="n">0.0%</td>'
+            assert page.cell(0.0, unit) == '<td class="n">0.0%</td>'
+
+    def test_volatility_is_a_magnitude_never_signed_or_coloured(self):
+        cell = page.cell(23.4, "vol")
+        assert "23.4%" in cell and "+" not in cell
+        assert "up" not in cell and "dn" not in cell
+
+    def test_volume_trend_is_signed_but_uncoloured(self):
+        """Above or below its own average, neither direction is a gain."""
+        cell = page.cell(45.0, "volume")
+        assert "+45.0%" in cell
+        assert "up" not in cell and "dn" not in cell
+
     def test_the_table_carries_a_header_per_declared_parameter(self):
         rows = portfolio.rows(snapshot(), {}, {})
         markup = page.table(rows)
@@ -634,6 +652,37 @@ class TestTrendUsesTheDisplayedPrice:
                               "currency": "EUR", "price_date": None}]
         portfolio.rows(snap, {}, {})
         assert seen["on"] == "2026-02-09"
+
+
+class TestSeriesIncludesVolume:
+    """`_series` folds a listing's volume history in alongside its price
+    history - a separate store, so a listing with one and not the other is
+    ordinary, not an error."""
+
+    @pytest.fixture
+    def closes(self, monkeypatch):
+        from datetime import date, timedelta
+        start = date(2025, 1, 1)
+        stored = {(start + timedelta(days=i)).isoformat(): (100.0, "yahoo")
+                  for i in range(30)}
+        monkeypatch.setattr(portfolio.price_history, "load",
+                            lambda t: dict(stored))
+        return stored
+
+    def test_no_volume_series_means_no_volume_trend(self, closes, monkeypatch):
+        monkeypatch.setattr(portfolio.volume_history, "load", lambda t: {})
+        m = portfolio._series("SAP.DE")
+        assert "volume_trend" not in m
+
+    def test_a_volume_series_produces_a_volume_trend(self, closes, monkeypatch):
+        from datetime import date, timedelta
+        start = date(2025, 1, 1)
+        volumes = {(start + timedelta(days=i)).isoformat(): 1_000_000.0
+                   for i in range(20)}
+        monkeypatch.setattr(portfolio.volume_history, "load",
+                            lambda t: dict(volumes))
+        m = portfolio._series("SAP.DE")
+        assert m["volume_trend"] is not None
 
 
 class TestIncompleteAggregate:

@@ -35,6 +35,10 @@ def cell(value, unit):
     """
     if value is None:
         return DASH
+    # A value that rounds to 0.0 has no sign worth printing: "-0.0%" and
+    # "+0.0%" both claim a direction the displayed magnitude doesn't show.
+    if unit in ("percent", "fall", "volume") and round(value, 1) == 0:
+        return '<td class="n">0.0%</td>'
     if unit == "percent":
         return f'<td class="n {"up" if value >= 0 else "dn"}">{value:+.1f}%</td>'
     # A fall is never positive, so its sign says nothing and coloring by it
@@ -44,6 +48,14 @@ def cell(value, unit):
         return f'<td class="n {"dn" if value < -5 else ""}">{value:+.1f}%</td>'
     if unit == "days":
         return f'<td class="n none">{value:.0f}d</td>'
+    # Volatility is a magnitude, never negative, so a sign would claim a
+    # direction it does not have. Volume against its own average is signed,
+    # but neither direction is a gain or a loss the way percent's is - both
+    # stay uncoloured for the same reason RSI does.
+    if unit == "vol":
+        return f'<td class="n none">{value:.1f}%</td>'
+    if unit == "volume":
+        return f'<td class="n none">{value:+.1f}%</td>'
     return f'<td class="n">{value:.0f}</td>'
 
 
@@ -161,13 +173,14 @@ def table(rows, declared=None):
     """
     declared = ix.declared() if declared is None else declared
     units = [(d["key"], d["unit"]) for d in declared]
-    heads = "".join(f'<th class="n" title="{d["means"]}">{d["label"]}</th>'
-                    for d in declared)
+    heads = "".join(
+        f'<th class="n"><span class="tip" tabindex="0" data-tip="{d["means"]}">'
+        f'{d["label"]}</span></th>' for d in declared)
     body = "".join(_row(r, units) for r in rows)
     return f"""<div class="scroll"><table><thead><tr>
       <th>Position</th><th class="n">Qty</th><th class="n">Price</th>
       <th class="n">Value</th><th class="n">Weight</th><th class="n">Day</th>
-      <th class="n">P&amp;L</th>{heads}
+      <th class="n"><span class="tip" tabindex="0" data-tip="unrealised gain or loss against cost basis, converted to the portfolio's base currency; positions stating no cost basis are excluded rather than counted as zero">P&amp;L</span></th>{heads}
     </tr></thead><tbody>{body}</tbody></table></div>"""
 
 
@@ -325,7 +338,7 @@ tbody tr:hover{{background:var(--surface-0)}}
    on a td drops it out of table layout and shears the row sideways. */
 .peak-age{{display:block;font-size:11px;color:var(--text-muted);font-weight:400}}
 .none{{color:var(--text-muted)}}
-th[title]{{cursor:help}}
+.tip{{cursor:help;border-bottom:1px dotted var(--text-muted)}}
 .w{{position:relative}}
 .bar{{position:absolute;left:10px;right:10px;bottom:3px;height:2px;background:var(--line);
   border-radius:2px}}
@@ -371,5 +384,11 @@ document.querySelectorAll('.seg').forEach(s=>{{
 document.querySelectorAll('.pt').forEach(p=>{{
   p.addEventListener('mousemove',e=>show(e,`<b>${{p.dataset.d}}</b> ${{p.dataset.v}} {base}`));
   p.addEventListener('mouseleave',hide);}});
+document.querySelectorAll('.tip').forEach(t=>{{
+  t.addEventListener('mousemove',e=>show(e,t.dataset.tip));
+  t.addEventListener('mouseleave',hide);
+  t.addEventListener('focus',()=>{{const r=t.getBoundingClientRect();
+    show({{clientX:r.left,clientY:r.bottom}},t.dataset.tip);}});
+  t.addEventListener('blur',hide);}});
 </script></body></html>
 """

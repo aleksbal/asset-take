@@ -15,6 +15,7 @@ import paths
 from holdings import archive
 from market import indicators as ix
 from market import prices as price_history
+from market import volume as volume_history
 from market.money import Converted, Money
 
 
@@ -141,8 +142,12 @@ def _series(ticker, price=None, on=None):
     if price is None or not session or session <= str(max(
             day for day, _ in series)):
         price = session = None
+    # Volume has no live figure to fold in the way price does: it is only
+    # ever recorded once a session settles, so unlike `price` there is no
+    # today's-number to compare a stored average against.
+    volumes = list(volume_history.load(ticker).items())
     return {**ix.inputs(series, live=price, live_on=session),
-            **ix.values(series, live=price, live_on=session)}
+            **ix.values(series, live=price, live_on=session, volumes=volumes)}
 
 
 def _converted(amount, currency, rates, base):
