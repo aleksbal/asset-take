@@ -143,6 +143,19 @@ class TestRealizedVol:
         calm = series([100 + (1 if i % 2 else -1) for i in range(21)])
         assert trends.realized_vol(calm) > 5
 
+    def test_a_zero_close_is_absent_not_a_shortened_window(self):
+        """A zero close is corrupt data, not a real price. Silently
+        dropping the one return it breaks and reporting the rest under the
+        full 20-session label would be a 19-session figure wearing it."""
+        values = [100.0] * 10 + [0.0] + [100.0] * 10
+        assert trends.realized_vol(series(values)) is None
+
+    def test_a_zero_close_at_the_very_end_is_still_absent(self):
+        """The last close is never a denominator, but a zero there is still
+        not a real price."""
+        values = [100.0] * 20 + [0.0]
+        assert trends.realized_vol(series(values)) is None
+
 
 class TestDescribe:
     def test_reports_what_the_series_supports(self):

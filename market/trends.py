@@ -137,8 +137,13 @@ def realized_vol(closes, days=VOL_WINDOW):
     if not window:
         return None
     values = [close for _, close in window]
-    returns = [values[i] / values[i - 1] - 1 for i in range(1, len(values))
-               if values[i - 1]]
+    # A zero close is not a real price - it is corrupt or missing data that
+    # slipped past storage. Dropping just the one return it breaks and
+    # reporting the rest under the full window's label would be a
+    # shortened window wearing its name.
+    if any(v == 0 for v in values):
+        return None
+    returns = [values[i] / values[i - 1] - 1 for i in range(1, len(values))]
     if len(returns) < 2:
         return None
     mean = sum(returns) / len(returns)
