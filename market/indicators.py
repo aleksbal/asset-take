@@ -113,12 +113,18 @@ def values(closes, live=None, live_on=None, volumes=None, have=None, indicators=
     that needs it must say so and be absent from rows without one, rather
     than computed from a substituted zero. Passing it is what adds
     `"volumes"` to `have`; a caller need not track that itself.
+
+    Closes and volumes are independent stores, so one may be present without
+    the other - a parameter needing only volumes must still compute where
+    there is no price series, or `volume_trend`'s own declared `needs`
+    would be a promise this function does not keep.
     """
-    if not closes:
+    if not closes and not volumes:
         return {}
-    closes = sorted(closes, key=lambda row: str(row[0]))
     if have is None:
-        have = ("closes",) + (("volumes",) if volumes else ())
+        have = (("closes",) if closes else ()) + (("volumes",) if volumes else ())
+    if closes:
+        closes = sorted(closes, key=lambda row: str(row[0]))
     if volumes:
         volumes = sorted(volumes, key=lambda row: str(row[0]))
     return {i.key: i.compute(closes, live, live_on, volumes)

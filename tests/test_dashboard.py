@@ -684,6 +684,21 @@ class TestSeriesIncludesVolume:
         m = portfolio._series("SAP.DE")
         assert m["volume_trend"] is not None
 
+    def test_volume_trend_needs_no_price_series(self, monkeypatch):
+        """The two stores are independent: a listing whose price history is
+        missing or not yet seeded must still get volume_trend from its own
+        store, rather than being gated on a series it doesn't need."""
+        from datetime import date, timedelta
+        monkeypatch.setattr(portfolio.price_history, "load", lambda t: {})
+        start = date(2025, 1, 1)
+        volumes = {(start + timedelta(days=i)).isoformat(): (1_000_000.0, "yahoo")
+                   for i in range(20)}
+        monkeypatch.setattr(portfolio.volume_history, "load",
+                            lambda t: dict(volumes))
+        m = portfolio._series("SAP.DE")
+        assert m["volume_trend"] is not None
+        assert "last" not in m       # nothing to say about a price that isn't there
+
 
 class TestIncompleteAggregate:
     """A headline P&L that silently omits positions states the sum of the

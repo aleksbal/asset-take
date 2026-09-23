@@ -38,6 +38,15 @@ class TestVolumeIsOptional:
         assert with_vol["rsi"] == without_vol["rsi"]
         assert with_vol["drawdown"] == without_vol["drawdown"]
 
+    def test_volume_trend_computes_with_no_price_series_at_all(self):
+        """The two stores are independent, and volume_trend declares only
+        `needs=("volumes",)` - a listing with volume history but no price
+        series must still get it, not be silently gated on closes."""
+        volumes = series([1_000_000.0] * 19 + [2_000_000.0])
+        v = ix.values([], volumes=volumes)
+        assert v["volume_trend"] is not None
+        assert "drawdown" not in v      # needs closes, which this row has none of
+
 
 class TestVolatilityNeedsOnlyCloses:
     def test_present_for_any_priced_instrument_held_or_not(self):

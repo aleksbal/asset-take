@@ -133,20 +133,21 @@ def _series(ticker, price=None, on=None):
     """
     series = [(day, close) for day, (close, _) in
               price_history.load(ticker).items()]
-    if not series:
-        return {}
-    # Only where the quote is newer than everything stored. Regenerating the
-    # report without a fresh snapshot would otherwise append a stale price
-    # under a new date, inventing a session across whatever gap had passed.
-    session = str(on or "")
-    if price is None or not session or session <= str(max(
-            day for day, _ in series)):
-        price = session = None
     # Volume has no live figure to fold in the way price does: it is only
     # ever recorded once a session settles, so unlike `price` there is no
     # today's-number to compare a stored average against.
     volumes = [(day, vol) for day, (vol, _) in
               volume_history.load(ticker).items()]
+    if not series and not volumes:
+        return {}
+    # Only where there is a price series to compare against, and the quote
+    # is newer than everything stored in it. Regenerating the report without
+    # a fresh snapshot would otherwise append a stale price under a new
+    # date, inventing a session across whatever gap had passed.
+    session = str(on or "")
+    if not series or price is None or not session or session <= str(max(
+            day for day, _ in series)):
+        price = session = None
     return {**ix.inputs(series, live=price, live_on=session),
             **ix.values(series, live=price, live_on=session, volumes=volumes)}
 
