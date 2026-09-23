@@ -48,10 +48,14 @@ class Position:
     previous_close: Optional[float] = None
     price_date: Optional[str] = None
     name: Optional[str] = None
-    # The settled session's traded volume, alongside price_date since it is
-    # only ever recorded for the same session - an in-progress day's volume
-    # is a partial count, not a day's total.
+    # The settled session's traded volume, and the session it belongs to.
+    # A separate field from price_date rather than reusing it: volume
+    # capture does not depend on the quote's currency resolving, so it can
+    # be set while price_date stays None for a position whose unit is
+    # unknown - reusing price_date would silently drop that volume when
+    # it comes time to record it.
     volume: Optional[float] = None
+    volume_date: Optional[str] = None
 
 
 @dataclass
@@ -358,6 +362,7 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                 # depends on.
                 settled = session < date.today()
                 if settled and 'Volume' in ticker_data:
+                    pos.volume_date = session.isoformat()
                     try:
                         vol = float(ticker_data['Volume'].loc[closes.index[-1]])
                         # A missing volume arrives as NaN, not an exception -

@@ -46,10 +46,13 @@ seeded, recorded, rescaled = price_history.update(
     {p.ticker: p.current_price for p in report.positions},
     dates={p.ticker: p.price_date for p in report.positions if p.price_date},
     units={p.ticker: p.quote_currency for p in report.positions if p.quote_currency})
-# Per-listing volume series, same session as the price it rode in with.
+# Per-listing volume series. Its own date map, not price_date's: volume
+# capture does not depend on the quote's currency resolving, so a position
+# with an unresolved unit can carry a volume with no price_date at all -
+# reusing price_date here would silently drop it.
 vol_seeded, vol_recorded = volume_history.update(
     {p.ticker: p.volume for p in report.positions if p.volume is not None},
-    dates={p.ticker: p.price_date for p in report.positions if p.price_date})
+    dates={p.ticker: p.volume_date for p in report.positions if p.volume_date})
 
 print(f"{path}  total {report.total_value:,.2f} {base}  "
       f"({report.daily_change_pct:+.2f}%)  [{len(list(out.glob('*.json')))} days]")
