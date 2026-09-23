@@ -355,8 +355,13 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                     # later feeds.
                     if quote.settled and 'Volume' in ticker_data:
                         try:
-                            pos.volume = float(
+                            vol = float(
                                 ticker_data['Volume'].loc[closes.index[-1]])
+                            # A missing volume arrives as NaN, not an
+                            # exception - float(nan) succeeds. Left as NaN it
+                            # would reach volume._write()'s round() and crash
+                            # the run after the snapshot was already written.
+                            pos.volume = None if vol != vol else vol
                         except (KeyError, ValueError, TypeError):
                             pos.volume = None
 

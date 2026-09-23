@@ -147,17 +147,22 @@ One entry in `market/indicators.py`:
         key="my_metric", label="My metric", unit="percent",
         means="what a reader needs to know about this number",
         needs=("closes",),
-        compute=lambda closes, live, on: trends.my_metric(closes, live))
+        compute=lambda closes, live, on, volumes=None: trends.my_metric(closes, live))
+
+`compute` always receives four positional arguments - closes, the live quote,
+its session, and a volume series where one exists (`None` otherwise) - even
+where a parameter ignores the last one, as most do.
 
 Add it to `ALL` and it appears in `report.json`, as a column on the page, and
 in anything that filters rows. Nothing else is touched — the renderer builds
 its columns from the report's own declaration and formats by `unit`, never by
 name.
 
-`needs` states the inputs required. Everything shipped needs only a series of
-closes, so everything runs on any instrument, held or not. A parameter needing
-a cost basis would say so and be absent from rows without one, rather than
-computed from a substituted zero.
+`needs` states the inputs required: `"closes"`, `"volumes"`, or both. Most
+parameters need only closes, so they run on any instrument, held or not. A
+parameter needing volumes is absent from a listing with no volume history,
+the same way one needing a cost basis would be absent from a position with
+none - rather than computed from a substituted zero.
 
 The registry carries what a parameter *means* and never how to print it.
 Decimal places, an em dash for an absent value and which side is green are

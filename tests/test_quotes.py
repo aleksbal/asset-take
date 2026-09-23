@@ -120,6 +120,30 @@ class TestVolumeCapture:
         [out] = pm.fetch_prices([pos])
         assert out.volume is None
 
+    def test_a_nan_volume_is_not_a_number_either(self, monkeypatch):
+        """A missing volume can arrive as NaN rather than an absent column -
+        float(nan) does not raise, so this is not caught by the except
+        clause. Left as NaN it survives every `is not None` check downstream
+        and crashes on round(nan) inside volume._write()."""
+        import math
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0],
+                              "Volume": [1_000_000.0, float("nan")]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Quote:
+            fast_info = {"currency": "GBp"}
+            info = {"shortName": "British American Tobacco"}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.volume is None
+        assert not (isinstance(out.volume, float) and math.isnan(out.volume))
+
 
 class TestUnconfirmedUnit:
     """A failed unit lookup looks exactly like a major-unit quote. Assuming
