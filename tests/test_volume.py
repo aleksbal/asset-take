@@ -81,12 +81,19 @@ class TestDailyUpdate:
             fetch=fetch_ok, on=date(2026, 9, 18))
         assert (seeded, recorded) == (2, 2)
 
-    def test_a_position_without_a_volume_is_skipped(self):
+    def test_a_position_without_a_volume_records_nothing_today(self):
         seeded, recorded = volume.update(
             {"SAP.DE": None, "ALV.DE": 600_000.0}, fetch=fetch_ok,
             on=date(2026, 9, 18))
         assert recorded == 1
-        assert volume.load("SAP.DE") == {}
+        assert "2026-09-18" not in volume.load("SAP.DE")
+
+    def test_a_position_without_a_volume_is_still_seeded(self):
+        """Today's batch download can lack a volume the provider's history
+        has; the seed does not depend on it."""
+        seeded, _ = volume.update({"SAP.DE": None}, dates={}, fetch=fetch_ok)
+        assert seeded == 1
+        assert set(volume.load("SAP.DE")) == {"2026-09-16", "2026-09-17"}
 
     def test_an_unpriceable_listing_does_not_block_the_rest(self):
         def fetch_one(ticker):

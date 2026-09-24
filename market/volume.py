@@ -146,12 +146,17 @@ def update(volumes, dates=None, fetch=None, on=None):
     `volumes` maps ticker to its most recent traded volume, `dates` to the
     session that volume belongs to - the same two-map contract as
     `prices.update()`. Returns (seeded, recorded) counts.
+
+    A ticker whose volume is None is still seeded, for the reason given in
+    `prices.update()`: the seed does not depend on today's download.
     """
     seeded = recorded = 0
     for ticker, vol in volumes.items():
-        if not ticker or vol is None:
+        if not ticker:
             continue
         seeded += 1 if backfill(ticker, fetch=fetch) else 0
+        if vol is None:
+            continue
         if dates is None:
             day = on
         elif dates.get(ticker):

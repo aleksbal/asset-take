@@ -42,6 +42,8 @@ path.write_text(json.dumps({
 }, indent=2, default=str))
 # Per-listing price series: seed any we hold none for, then extend with
 # today's close. Independent of the snapshot above, which records the account.
+# Every position is passed, priced or not: a listing the download missed today
+# is still seeded, and only its close goes unrecorded.
 seeded, recorded, rescaled = price_history.update(
     {p.ticker: p.current_price for p in report.positions},
     dates={p.ticker: p.price_date for p in report.positions if p.price_date},
@@ -51,7 +53,7 @@ seeded, recorded, rescaled = price_history.update(
 # with an unresolved unit can carry a volume with no price_date at all -
 # reusing price_date here would silently drop it.
 vol_seeded, vol_recorded = volume_history.update(
-    {p.ticker: p.volume for p in report.positions if p.volume is not None},
+    {p.ticker: p.volume for p in report.positions},
     dates={p.ticker: p.volume_date for p in report.positions if p.volume_date})
 
 print(f"{path}  total {report.total_value:,.2f} {base}  "
