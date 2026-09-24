@@ -233,42 +233,36 @@ def refresh(ticker, fetch=None, unit=None):
     return len(rows)
 
 
-def update(priced, dates=None, units=None, fetch=None, on=None):
-    """Seed any listing we hold no series for, then record today's close.
+def update(closes, units=None, fetch=None):
+    """Seed any listing we hold no series for, then record its closes.
 
-    A close that cannot be a day's move triggers a re-seed: the series has
-    most likely been rescaled by a corporate action.
+    `closes` maps ticker to {session: close}, every settled session the
+    day's download held, and `units` to the venue's quote unit where it is
+    already known. A session already stored is left as it is, so passing a
+    window that overlaps the series costs nothing, and a session missed by
+    an earlier run is filled in. Returns (seeded, recorded, rescaled) counts.
 
-    `priced` maps ticker to its latest close, `dates` to the session that
-    close settled in, and `units` to the venue's quote unit where it is
-    already known. Returns (seeded, recorded, rescaled) counts.
+    A ticker with no closes is still seeded. The seed is its own fetch,
+    independent of the download that came back empty, so a gap in one run's
+    download is no reason to leave the listing without history until some
+    later run happens to price it too.
 
-    A ticker whose close is None is still seeded. The seed is its own fetch,
-    independent of the download that failed to price it today, so a gap in
-    one run's download is no reason to leave the listing without history
-    until some later run happens to price it too. Only what needs today's
-    close - recording it, and checking it for a rescale - is skipped.
+    A close that cannot be a day's move from the one before it triggers a
+    re-seed: the series has most likely been rescaled by a corporate action.
     """
     seeded = recorded = rescaled = 0
-    for ticker, close in priced.items():
+    for ticker, days in closes.items():
         if not ticker:
             continue
         unit = (units or {}).get(ticker)
         seeded += 1 if backfill(ticker, fetch=fetch, unit=unit) else 0
-        if close is None:
-            continue
-        series = load(ticker)
-        if series and _looks_rescaled(series[max(series)][0], close):
-            rescaled += 1 if refresh(ticker, fetch=fetch, unit=unit) else 0
-        # The session the close settled in, not the day of the run. Where
-        # sessions are supplied and this ticker has none, the latest bar has
-        # not settled: seeding still happened, but nothing is recorded, since
-        # an intraday value written as a close could never be corrected.
-        if dates is None:
-            day = on
-        elif dates.get(ticker):
-            day = dates[ticker]
-        else:
-            continue
-        recorded += 1 if record(ticker, close, on=day) else 0
+        for day in sorted(days or {}):
+            close = days[day]
+            series = load(ticker)
+            if day in series:
+                continue
+            before = [d for d in series if d < day]
+            if before and _looks_rescaled(series[max(before)][0], close):
+                rescaled += 1 if refresh(ticker, fetch=fetch, unit=unit) else 0
+            recorded += 1 if record(ticker, close, on=day) else 0
     return seeded, recorded, rescaled

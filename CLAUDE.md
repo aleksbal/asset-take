@@ -185,6 +185,16 @@ it is not recorded at all: the series lags a session rather than holding an
 intraday value that can never be corrected. The live price is still used for
 the snapshot, which is a point-in-time valuation and wants it.
 
+So what a series records is never the live price but `Position.closes`: every
+settled session the day's download held. Recording only the latest bar
+recorded nothing on any run after the close - which is when the schedule runs
+- and the series stopped growing after its seed without a word. The whole
+window rather than the latest settled bar, because a missed run or a download
+that comes back short for one ticker otherwise leaves a gap for good, and a
+200-session average over a series with gaps spans more than 200 sessions.
+`closes` is also not a field the valuation may clear: a missing exchange rate
+says nothing about what a listing closed at.
+
 Where a quote unit cannot be established, nothing is stored and nothing is
 valued. No marker is left either, so the next run simply retries. An unscaled
 series is worse than an absent one - it sits beside converted closes, reads
@@ -302,6 +312,12 @@ series is `market/prices.py`, renamed from `price_history.py` for that reason.
 weekend run stores Friday's closes under Saturday's date; the per-listing
 price series is already immune, since it records a close under the session it
 settled in, but the snapshot series dates itself by the run.
+
+A snapshot is dated when its prices are taken, not when it is written: a run
+crawling through network timeouts finished after midnight and filed
+Wednesday's valuation under Thursday. A run that valued nothing writes no
+snapshot at all - it measured nothing, and written it is a portfolio worth
+0.00 that replaces anything taken earlier that day.
 
 A snapshot's completeness is derived, not stored: a position the run could not
 value is left unpriced, and the snapshot records that. `dashboard.complete()`

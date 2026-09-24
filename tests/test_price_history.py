@@ -84,15 +84,14 @@ class TestRecording:
 class TestDailyUpdate:
     def test_seeds_and_records_in_one_pass(self):
         seeded, recorded, rescaled = price_history.update(
-            {"SAP.DE": 102.0, "ALV.DE": 103.0},
-            fetch=fetch_ok, on=date(2026, 9, 18))
+            {"SAP.DE": {"2026-09-18": 102.0}, "ALV.DE": {"2026-09-18": 103.0}},
+            fetch=fetch_ok)
         assert (seeded, recorded, rescaled) == (2, 2, 0)
 
     def test_a_position_without_a_price_records_no_close(self):
         """The provider can fail one ticker. That is not a close of zero."""
         seeded, recorded, _ = price_history.update(
-            {"SAP.DE": None, "ALV.DE": 103.0}, fetch=fetch_ok,
-            on=date(2026, 9, 18))
+            {"SAP.DE": {}, "ALV.DE": {"2026-09-18": 103.0}}, fetch=fetch_ok)
         assert recorded == 1
         assert "2026-09-18" not in price_history.load("SAP.DE")
 
@@ -100,7 +99,7 @@ class TestDailyUpdate:
         """The seed is its own fetch. A gap in today's download is no reason
         to leave the listing without history until a later run prices it."""
         seeded, _, _ = price_history.update(
-            {"SAP.DE": None}, dates={}, fetch=fetch_ok)
+            {"SAP.DE": {}}, fetch=fetch_ok)
         assert seeded == 1
         assert all(source == price_history.YAHOO
                    for _, source in price_history.load("SAP.DE").values())
@@ -112,7 +111,7 @@ class TestDailyUpdate:
             raise AssertionError("no close today, so nothing to compare")
 
         _, _, rescaled = price_history.update(
-            {"SAP.DE": None}, fetch=must_not_refetch, on=date(2026, 9, 18))
+            {"SAP.DE": {}}, fetch=must_not_refetch)
         assert rescaled == 0
 
     def test_an_unpriceable_listing_does_not_block_the_rest(self):
@@ -120,8 +119,8 @@ class TestDailyUpdate:
             return fetch_ok(ticker) if ticker == "ALV.DE" else {}
 
         seeded, recorded, _ = price_history.update(
-            {"NEW.DE": 10.0, "ALV.DE": 103.0}, fetch=fetch_one,
-            on=date(2026, 9, 18))
+            {"NEW.DE": {"2026-09-18": 10.0}, "ALV.DE": {"2026-09-18": 103.0}},
+            fetch=fetch_one)
         assert seeded == 1 and recorded == 2   # NEW.DE still records today
 
 
@@ -155,7 +154,7 @@ class TestCorporateActions:
             return {"2026-09-16": 99.0, "2026-09-17": 100.0}
 
         seeded, recorded, rescaled = price_history.update(
-            {"SAP.DE": 100.0}, fetch=post_split, on=date(2026, 9, 18))
+            {"SAP.DE": {"2026-09-18": 100.0}}, fetch=post_split)
         assert rescaled == 1
         series = price_history.load("SAP.DE")
         assert series["2026-09-17"] == (100.0, price_history.YAHOO)  # rescaled
@@ -167,7 +166,7 @@ class TestCorporateActions:
             raise AssertionError("an ordinary day must not trigger a re-seed")
 
         _, _, rescaled = price_history.update(
-            {"SAP.DE": 104.0}, fetch=must_not_fetch, on=date(2026, 9, 18))
+            {"SAP.DE": {"2026-09-18": 104.0}}, fetch=must_not_fetch)
         assert rescaled == 0
 
     def test_a_re_seed_keeps_what_the_provider_does_not_cover(self):
@@ -193,7 +192,7 @@ class TestCorporateActions:
             return {"2026-09-17": 100.0}
 
         _, _, rescaled = price_history.update(
-            {"SAP.DE": 100.0}, fetch=post_split, on=date(2026, 9, 18))
+            {"SAP.DE": {"2026-09-18": 100.0}}, fetch=post_split)
         assert rescaled == 1
 
     def test_a_reverse_three_for_two_is_detected(self):
@@ -204,7 +203,7 @@ class TestCorporateActions:
             return {"2026-09-17": 150.0}
 
         _, _, rescaled = price_history.update(
-            {"SAP.DE": 150.0}, fetch=post_split, on=date(2026, 9, 18))
+            {"SAP.DE": {"2026-09-18": 150.0}}, fetch=post_split)
         assert rescaled == 1
 
 
@@ -274,8 +273,8 @@ class TestProviderHistoryUnits:
         """Both sides of the handover must be on one scale, or the next run
         reads the step as a split."""
         price_history.backfill("BATS.L")
-        _, _, rescaled = price_history.update({"BATS.L": 42.10},
-                                              on=date(2026, 9, 18))
+        _, _, rescaled = price_history.update(
+            {"BATS.L": {"2026-09-18": 42.10}})
         assert rescaled == 0
         series = price_history.load("BATS.L")
         assert max(series.values(), key=lambda v: v[0])[0] < 100
@@ -287,21 +286,54 @@ class TestSettledSession:
     never traded, and the same-day guard prevents a later run correcting it."""
 
     def test_a_close_is_filed_under_its_own_session(self):
-        price_history.update({"SAP.DE": 102.0}, dates={"SAP.DE": "2026-09-17"},
-                             fetch=fetch_none, on=date(2026, 9, 19))
+        price_history.update({"SAP.DE": {"2026-09-17": 102.0}},
+                             fetch=fetch_none)
         assert set(price_history.load("SAP.DE")) == {"2026-09-17"}
 
     def test_a_weekend_run_does_not_invent_a_trading_day(self):
-        price_history.update({"SAP.DE": 102.0}, dates={"SAP.DE": "2026-09-18"},
-                             fetch=fetch_none, on=date(2026, 9, 19))
-        price_history.update({"SAP.DE": 102.0}, dates={"SAP.DE": "2026-09-18"},
-                             fetch=fetch_none, on=date(2026, 9, 20))
+        price_history.update({"SAP.DE": {"2026-09-18": 102.0}},
+                             fetch=fetch_none)
+        price_history.update({"SAP.DE": {"2026-09-18": 102.0}},
+                             fetch=fetch_none)
         assert set(price_history.load("SAP.DE")) == {"2026-09-18"}
 
-    def test_the_run_date_is_used_when_no_session_is_given(self):
-        price_history.update({"SAP.DE": 102.0}, fetch=fetch_none,
-                             on=date(2026, 9, 19))
-        assert set(price_history.load("SAP.DE")) == {"2026-09-19"}
+
+class TestWindow:
+    """Each run passes every settled close its download held. A session a
+    run missed - the machine was off, or the download came back short for
+    one ticker - is filled by the next, where recording only the latest
+    close left a gap for good, and a 200-session average over a series with
+    gaps spans more than 200 sessions under the same label."""
+
+    def test_a_missed_session_is_filled_in(self):
+        price_history.record("SAP.DE", 100.0, on="2026-09-16")
+        _, recorded, _ = price_history.update(
+            {"SAP.DE": {"2026-09-16": 100.0, "2026-09-17": 101.0,
+                        "2026-09-18": 102.0}}, fetch=fetch_none)
+        assert recorded == 2
+        assert set(price_history.load("SAP.DE")) == {
+            "2026-09-16", "2026-09-17", "2026-09-18"}
+
+    def test_a_stored_session_is_not_overwritten(self):
+        price_history.backfill("SAP.DE", fetch=fetch_ok)
+        _, recorded, _ = price_history.update(
+            {"SAP.DE": {"2026-09-17": 555.0}}, fetch=fetch_ok)
+        assert recorded == 0
+        assert price_history.load("SAP.DE")["2026-09-17"] == (
+            101.0, price_history.YAHOO)
+
+    def test_a_filled_session_is_checked_against_the_one_before_it(self):
+        """Not against the latest stored close: a gap filled behind it
+        compares with its own neighbour, where the latest may be days on."""
+        price_history.backfill("SAP.DE", fetch=lambda t: {
+            "2026-09-16": 100.0, "2026-09-18": 150.0})
+
+        def must_not_fetch(ticker):
+            raise AssertionError("an ordinary day must not trigger a re-seed")
+
+        _, recorded, rescaled = price_history.update(
+            {"SAP.DE": {"2026-09-17": 100.5}}, fetch=must_not_fetch)
+        assert (recorded, rescaled) == (1, 0)
 
     def test_record_accepts_a_session_string(self):
         price_history.record("SAP.DE", 102.0, on="2026-09-17")
@@ -339,33 +371,32 @@ class TestUnknownQuoteUnit:
             "2026-09-16": 42.0, "2026-09-17": 42.08}
 
     def test_the_unit_reaches_the_fetch_through_update(self, blind):
-        price_history.update({"BATS.L": 42.10}, dates={"BATS.L": "2026-09-18"},
+        price_history.update({"BATS.L": {"2026-09-18": 42.10}},
                              units={"BATS.L": "GBp"})
         series = price_history.load("BATS.L")
         assert series["2026-09-17"][0] == 42.08
 
 
-class TestUnsettledSession:
-    """A bar dated today may still be in progress, and `record` refuses to
-    overwrite a date - so an intraday value written as a close stays wrong
-    for good. The series lags a session instead."""
+class TestNoSettledSession:
+    """A ticker whose download held no settled session passes no closes.
+    Deciding what settled is `fetch_prices`'s job (see test_quotes.py); here
+    the point is that such a ticker is still seeded and records nothing."""
 
     def test_a_ticker_with_no_settled_session_is_not_recorded(self):
         seeded, recorded, _ = price_history.update(
-            {"SAP.DE": 102.0}, dates={}, fetch=fetch_none)
+            {"SAP.DE": {}}, fetch=fetch_none)
         assert recorded == 0
         assert price_history.load("SAP.DE") == {}
 
-    def test_seeding_still_happens_for_an_unsettled_ticker(self):
+    def test_seeding_still_happens_for_it(self):
         seeded, recorded, _ = price_history.update(
-            {"SAP.DE": 102.0}, dates={}, fetch=fetch_ok)
+            {"SAP.DE": {}}, fetch=fetch_ok)
         assert seeded == 1 and recorded == 0
         assert len(price_history.load("SAP.DE")) == 2
 
-    def test_a_settled_ticker_alongside_an_unsettled_one_is_recorded(self):
+    def test_it_does_not_block_a_settled_ticker(self):
         _, recorded, _ = price_history.update(
-            {"SAP.DE": 102.0, "ALV.DE": 103.0},
-            dates={"ALV.DE": "2026-09-17"}, fetch=fetch_none)
+            {"SAP.DE": {}, "ALV.DE": {"2026-09-17": 103.0}}, fetch=fetch_none)
         assert recorded == 1
         assert set(price_history.load("ALV.DE")) == {"2026-09-17"}
 
@@ -395,12 +426,10 @@ class TestSeedRetry:
         assert price_history.backfill("SAP.DE", fetch=must_not_refetch) == 0
 
     def test_a_failed_seed_then_a_record_still_retries(self):
-        seeded, _, _ = price_history.update({"SAP.DE": 102.0},
-                                            dates={"SAP.DE": "2026-09-18"},
+        seeded, _, _ = price_history.update({"SAP.DE": {"2026-09-18": 102.0}},
                                             fetch=fetch_none)
         assert seeded == 0
-        seeded, _, _ = price_history.update({"SAP.DE": 103.0},
-                                            dates={"SAP.DE": "2026-09-19"},
+        seeded, _, _ = price_history.update({"SAP.DE": {"2026-09-19": 103.0}},
                                             fetch=fetch_ok)
         assert seeded == 1
 
