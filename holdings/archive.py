@@ -1,9 +1,7 @@
-"""Read what was recorded: the daily snapshots and the holdings beside them.
+"""Reads the daily snapshots and the holdings on file.
 
-A snapshot stores what was measured - quantities, prices, the rates in force
-- and never a figure worked out from them. Totals, weights and P&L are
-recomputed on every read, so a correction to the conversion logic repairs
-the whole series rather than only the days after it.
+Snapshots store quantities, prices and FX rates; totals, weights and P&L are
+recomputed from them on every read.
 """
 import csv
 import json
@@ -18,11 +16,8 @@ def snapshots():
 
 
 def held():
-    """The holdings on file, keyed by the ticker they resolved to.
-
-    Two files, because they answer different questions: holdings.csv is what
-    the broker says you own, and isin_map.csv is which listing each one was
-    matched to. Returns (by_ticker, display_names).
+    """The holdings from holdings.csv, keyed by the ticker each resolved to in
+    isin_map.csv. Returns (by_ticker, display_names).
     """
     by_isin = {h.isin: h for h in canonical.read(paths.HOLDINGS)}
     mapped = {r["isin"]: r for r in csv.DictReader(paths.ISIN_MAP.open())}
