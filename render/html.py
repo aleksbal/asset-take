@@ -4,6 +4,7 @@ Columns come from the report's `indicators` block; formatting is chosen by
 each parameter's `unit`.
 """
 import math
+from datetime import datetime
 
 from market import indicators as ix
 
@@ -14,6 +15,26 @@ OTHER = ("#8a8985", "#6f6e6a")
 
 
 DASH = '<td class="n none">\u2014</td>'
+
+
+# English names, independent of the machine's locale.
+DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+          "Nov", "Dec")
+
+
+def taken(as_of):
+    """When the snapshot was taken, e.g. "Thu 24 Sep 2026, 08:03", or the day
+    alone for snapshots that record no time; `as_of` as given if unreadable."""
+    try:
+        when = datetime.fromisoformat(str(as_of))
+    except ValueError:
+        return str(as_of)
+    day = (f"{DAYS[when.weekday()]} {when.day:02d} {MONTHS[when.month - 1]} "
+           f"{when.year}")
+    if len(str(as_of)) <= 10:
+        return day
+    return f"{day}, {when.hour:02d}:{when.minute:02d}"
 
 
 def num(x, dp=0):
@@ -204,7 +225,7 @@ def render(report):
     pnl, pnl_pct = t["pnl"], t["pnl_pct"]
     no_rate = report["excluded"]["cost_unconverted"]
     return TEMPLATE.format(
-        generated=report["as_of"],
+        taken=taken(report["as_of"]),
         days=t["days_recorded"],
         total=num(t["value"], 2),
         base=base,
@@ -252,7 +273,8 @@ body{{margin:0;padding:28px 16px 64px;background:var(--surface-0);color:var(--te
   font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;}}
 .wrap{{max-width:1040px;margin:0 auto}}
 h1{{font-size:15px;font-weight:600;letter-spacing:.02em;color:var(--text-secondary);
-  margin:0 0 20px;text-transform:uppercase}}
+  margin:0 0 2px;text-transform:uppercase}}
+.when{{color:var(--text-muted);font-size:13px;margin:0 0 20px}}
 h2{{font-size:13px;font-weight:600;color:var(--text-secondary);margin:0 0 14px;
   text-transform:uppercase;letter-spacing:.04em}}
 .card{{background:var(--surface-1);border:1px solid var(--line);border-radius:12px;
@@ -315,6 +337,7 @@ tbody tr:hover{{background:var(--surface-0)}}
 </style></head><body><div class="wrap">
 
 <h1>Portfolio</h1>
+<p class="when">Snapshot taken {taken}</p>
 
 <div class="card tiles">
   <div class="tile"><div class="k">Total value</div>
@@ -333,7 +356,7 @@ tbody tr:hover{{background:var(--surface-0)}}
 
 <div class="card"><h2>Positions</h2>{table}{caveat}</div>
 
-<p class="foot">{generated} · {days} day(s) recorded · prices via Yahoo Finance,
+<p class="foot">{days} day(s) recorded · prices via Yahoo Finance,
 which does not carry ING's Direkthandel venue, so totals differ from ING by ~0.1%.</p>
 
 </div><div id="tip"></div><script>
