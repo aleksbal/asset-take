@@ -88,13 +88,32 @@ class TestDailyUpdate:
             fetch=fetch_ok, on=date(2026, 9, 18))
         assert (seeded, recorded, rescaled) == (2, 2, 0)
 
-    def test_a_position_without_a_price_is_skipped(self):
+    def test_a_position_without_a_price_records_no_close(self):
         """The provider can fail one ticker. That is not a close of zero."""
         seeded, recorded, _ = price_history.update(
             {"SAP.DE": None, "ALV.DE": 103.0}, fetch=fetch_ok,
             on=date(2026, 9, 18))
         assert recorded == 1
-        assert price_history.load("SAP.DE") == {}
+        assert "2026-09-18" not in price_history.load("SAP.DE")
+
+    def test_a_position_without_a_price_is_still_seeded(self):
+        """The seed is its own fetch. A gap in today's download is no reason
+        to leave the listing without history until a later run prices it."""
+        seeded, _, _ = price_history.update(
+            {"SAP.DE": None}, dates={}, fetch=fetch_ok)
+        assert seeded == 1
+        assert all(source == price_history.YAHOO
+                   for _, source in price_history.load("SAP.DE").values())
+
+    def test_a_position_without_a_price_is_not_checked_for_a_rescale(self):
+        price_history.backfill("SAP.DE", fetch=fetch_ok)
+
+        def must_not_refetch(ticker):
+            raise AssertionError("no close today, so nothing to compare")
+
+        _, _, rescaled = price_history.update(
+            {"SAP.DE": None}, fetch=must_not_refetch, on=date(2026, 9, 18))
+        assert rescaled == 0
 
     def test_an_unpriceable_listing_does_not_block_the_rest(self):
         def fetch_one(ticker):

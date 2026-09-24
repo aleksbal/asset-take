@@ -242,13 +242,21 @@ def update(priced, dates=None, units=None, fetch=None, on=None):
     `priced` maps ticker to its latest close, `dates` to the session that
     close settled in, and `units` to the venue's quote unit where it is
     already known. Returns (seeded, recorded, rescaled) counts.
+
+    A ticker whose close is None is still seeded. The seed is its own fetch,
+    independent of the download that failed to price it today, so a gap in
+    one run's download is no reason to leave the listing without history
+    until some later run happens to price it too. Only what needs today's
+    close - recording it, and checking it for a rescale - is skipped.
     """
     seeded = recorded = rescaled = 0
     for ticker, close in priced.items():
-        if not ticker or close is None:
+        if not ticker:
             continue
         unit = (units or {}).get(ticker)
         seeded += 1 if backfill(ticker, fetch=fetch, unit=unit) else 0
+        if close is None:
+            continue
         series = load(ticker)
         if series and _looks_rescaled(series[max(series)][0], close):
             rescaled += 1 if refresh(ticker, fetch=fetch, unit=unit) else 0
