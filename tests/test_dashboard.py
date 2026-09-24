@@ -730,3 +730,15 @@ class TestSnapshotTime:
     def test_an_unreadable_value_is_shown_as_given(self):
         from render.html import taken
         assert taken("yesterday") == "yesterday"
+
+    def test_names_do_not_follow_the_machine_locale(self, monkeypatch):
+        import locale
+        from render.html import taken
+        try:
+            locale.setlocale(locale.LC_TIME, "de_DE.UTF-8")
+        except locale.Error:
+            pytest.skip("de_DE locale not installed")
+        try:
+            assert taken("2026-09-24T08:03:37+02:00") == "Thu 24 Sep 2026, 08:03"
+        finally:
+            locale.setlocale(locale.LC_TIME, "C")

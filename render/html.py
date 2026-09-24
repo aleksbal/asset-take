@@ -4,7 +4,7 @@ Columns come from the report's `indicators` block; formatting is chosen by
 each parameter's `unit`.
 """
 import math
-from datetime import date, datetime
+from datetime import datetime
 
 from market import indicators as ix
 
@@ -17,6 +17,12 @@ OTHER = ("#8a8985", "#6f6e6a")
 DASH = '<td class="n none">\u2014</td>'
 
 
+# English names, independent of the machine's locale.
+DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+          "Nov", "Dec")
+
+
 def taken(as_of):
     """When the snapshot was taken, e.g. "Thu 24 Sep 2026, 08:03", or the day
     alone for snapshots that record no time; `as_of` as given if unreadable."""
@@ -24,9 +30,11 @@ def taken(as_of):
         when = datetime.fromisoformat(str(as_of))
     except ValueError:
         return str(as_of)
+    day = (f"{DAYS[when.weekday()]} {when.day:02d} {MONTHS[when.month - 1]} "
+           f"{when.year}")
     if len(str(as_of)) <= 10:
-        return date(when.year, when.month, when.day).strftime("%a %d %b %Y")
-    return when.strftime("%a %d %b %Y, %H:%M")
+        return day
+    return f"{day}, {when.hour:02d}:{when.minute:02d}"
 
 
 def num(x, dp=0):
