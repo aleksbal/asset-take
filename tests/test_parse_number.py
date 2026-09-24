@@ -1,16 +1,11 @@
-"""Number parsing across notations.
-
-Regression: the original stripped every dot as a thousands separator, so a
-plain '30.0' was read as 300 — every quantity inflated tenfold, with a total
-that still looked plausible.
-"""
+"""Tests for parse_number across notations."""
 import pytest
 
 from portfolio_monitor import parse_number
 
 
 @pytest.mark.parametrize("text,expected", [
-    ("30.0", 30.0),          # the regression
+    ("30.0", 30.0),          # plain decimal point
     ("30", 30.0),
     ("205.9263", 205.9263),
     ("205,9263", 205.9263),  # German decimal comma
@@ -29,7 +24,6 @@ def test_empty_is_none(text):
 
 
 def test_quantity_is_not_inflated_by_a_decimal_point():
-    """The specific failure: 30.0 shares must never become 300."""
     assert parse_number("30.0") < 31
 
 
@@ -46,7 +40,5 @@ def test_an_explicit_separator_overrides_the_heuristic(text, sep, expected):
 
 
 def test_the_heuristic_alone_cannot_resolve_a_lone_comma():
-    """Why callers that know their locale must say so: '1,234' is genuinely
-    ambiguous, and the heuristic reads it as a decimal."""
     assert parse_number("1,234") == pytest.approx(1.234)
     assert parse_number("1,234", decimal_sep=".") == pytest.approx(1234.0)

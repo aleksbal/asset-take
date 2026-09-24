@@ -1,8 +1,4 @@
-"""Per-listing daily volume series, seeded from the provider and extended by
-our own runs - the volume counterpart of `market.prices`, minus what a share
-count does not need: no currency, so no Quote, and no rescale/refresh, since
-a split changing the share count is real rather than a scale error.
-"""
+"""Tests for market/volume.py: seeding and recording volume series."""
 from datetime import date
 
 import pytest
@@ -63,8 +59,6 @@ class TestRecording:
         assert len(series) == 1 and series["2026-09-18"][0] == 500_000.0
 
     def test_a_missing_volume_is_not_recorded_as_zero(self):
-        """The provider can fail to report volume for one ticker - that is
-        not a session with no trading."""
         assert not volume.record("SAP.DE", None, on=date(2026, 9, 18))
         assert volume.load("SAP.DE") == {}
 
@@ -89,8 +83,6 @@ class TestDailyUpdate:
         assert "2026-09-18" not in volume.load("SAP.DE")
 
     def test_a_position_without_a_volume_is_still_seeded(self):
-        """Today's batch download can lack a volume the provider's history
-        has; the seed does not depend on it."""
         seeded, _ = volume.update({"SAP.DE": {}}, fetch=fetch_ok)
         assert seeded == 1
         assert set(volume.load("SAP.DE")) == {"2026-09-16", "2026-09-17"}
@@ -116,11 +108,7 @@ class TestWindow:
 
 
 class TestSeedRetry:
-    """A seed can fail transiently while the daily figure still arrives via
-    `record()`, leaving a one-row local series. Treating any row at all as
-    seeded would read that as complete and never fetch the 2-year history -
-    the exact defect `market.prices.backfill()` guards against with the
-    same source mark."""
+    """A failed seed is retried on a later run."""
 
     def test_a_local_only_series_is_still_seeded_later(self):
         volume.record("SAP.DE", 500_000.0, on=date(2026, 9, 18))

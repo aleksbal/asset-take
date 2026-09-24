@@ -1,8 +1,5 @@
-"""Price series seeded from the provider and extended by our own runs.
-
-The series is per listing, never per account: it records what a listing closed
-at, so backfilling it carries no assumption about what was held when.
-"""
+"""Tests for market/prices.py: seeding, recording and re-seeding price
+series."""
 from datetime import date
 
 import pytest
@@ -43,8 +40,6 @@ class TestSeeding:
         assert price_history.backfill("SAP.DE", fetch=fetch_different) == 0
 
     def test_an_unavailable_history_leaves_no_trace(self, store):
-        """No marker, so a listing too new to have history today is simply
-        retried later rather than being written off for good."""
         assert price_history.backfill("NEW.DE", fetch=fetch_none) == 0
         assert not price_history.path_for("NEW.DE").exists()
 
@@ -66,8 +61,6 @@ class TestRecording:
         assert len(series) == 1 and series["2026-09-18"][0] == 205.5
 
     def test_recording_preserves_a_seeded_day(self):
-        """A day the provider supplied keeps its provenance. Overwriting it as
-        local would lose that it had been adjusted for splits and dividends."""
         price_history.backfill("SAP.DE", fetch=fetch_ok)
         price_history.record("SAP.DE", 555.0, on=date(2026, 9, 17))
         assert price_history.load("SAP.DE")["2026-09-17"] == (101.0,
@@ -89,15 +82,12 @@ class TestDailyUpdate:
         assert (seeded, recorded, rescaled) == (2, 2, 0)
 
     def test_a_position_without_a_price_records_no_close(self):
-        """The provider can fail one ticker. That is not a close of zero."""
         seeded, recorded, _ = price_history.update(
             {"SAP.DE": {}, "ALV.DE": {"2026-09-18": 103.0}}, fetch=fetch_ok)
         assert recorded == 1
         assert "2026-09-18" not in price_history.load("SAP.DE")
 
     def test_a_position_without_a_price_is_still_seeded(self):
-        """The seed is its own fetch. A gap in today's download is no reason
-        to leave the listing without history until a later run prices it."""
         seeded, _, _ = price_history.update(
             {"SAP.DE": {}}, fetch=fetch_ok)
         assert seeded == 1
@@ -141,10 +131,7 @@ class TestStoredFormat:
 
 
 class TestCorporateActions:
-    """A split rewrites the provider's history retroactively while ours stays
-    as observed, so closes recorded before it sit on the old scale and closes
-    after it on the new. Provenance cannot repair that - both sides are ours
-    and no ratio is stored - so the series has to be re-seeded."""
+    """Re-seeding after a split-sized move."""
 
     def test_a_split_sized_drop_re_seeds_the_series(self):
         price_history.backfill("SAP.DE", fetch=lambda t: {"2026-09-16": 396.0})
@@ -183,8 +170,6 @@ class TestCorporateActions:
         assert len(price_history.load("SAP.DE")) == 2
 
     def test_a_three_for_two_split_is_detected(self):
-        """Ratio 0.667. A threshold set for halvings misses it entirely and
-        leaves the series on two incompatible scales."""
         price_history.backfill("SAP.DE", fetch=lambda t: {"2026-09-16": 149.0})
         price_history.record("SAP.DE", 150.0, on=date(2026, 9, 17))
 
@@ -208,9 +193,7 @@ class TestCorporateActions:
 
 
 class TestRefreshWindow:
-    """The provider serves a fixed window. Once a series outlives it, a
-    refresh that keeps only the fetched range deletes every older row - and
-    does so again on every subsequent refresh."""
+    """Rows outside the provider's window during a refresh."""
 
     def test_rows_older_than_the_window_survive(self):
         for day, close in [(1, 50.0), (2, 51.0), (16, 400.0), (17, 404.0)]:
@@ -224,7 +207,6 @@ class TestRefreshWindow:
         assert "2026-09-01" in series and "2026-09-02" in series
 
     def test_older_rows_are_put_on_the_providers_scale(self):
-        """They predate the rescaling. The overlapping day gives the ratio."""
         price_history.record("SAP.DE", 200.0, on=date(2026, 9, 1))
         price_history.record("SAP.DE", 400.0, on=date(2026, 9, 16))
 
@@ -247,10 +229,7 @@ class TestRefreshWindow:
 
 
 class TestProviderHistoryUnits:
-    """The provider serves history in the venue's quote unit while the daily
-    close arrives already converted. Storing them unscaled mixes pence with
-    pounds in one series, and the hundredfold step then reads as a corporate
-    action that re-seeds back to the raw values on every run."""
+    """Provider history normalised to the major unit."""
 
     @pytest.fixture
     def pence(self, monkeypatch):
@@ -270,8 +249,6 @@ class TestProviderHistoryUnits:
                                                   "2026-09-17": 42.08}
 
     def test_a_seeded_series_agrees_with_the_daily_close(self, pence):
-        """Both sides of the handover must be on one scale, or the next run
-        reads the step as a split."""
         price_history.backfill("BATS.L")
         _, _, rescaled = price_history.update(
             {"BATS.L": {"2026-09-18": 42.10}})
@@ -281,9 +258,7 @@ class TestProviderHistoryUnits:
 
 
 class TestSettledSession:
-    """A close belongs to the session it settled in, not to the day of the
-    run. A weekend or pre-close run otherwise files it under a day the market
-    never traded, and the same-day guard prevents a later run correcting it."""
+    """Closes filed under their own session."""
 
     def test_a_close_is_filed_under_its_own_session(self):
         price_history.update({"SAP.DE": {"2026-09-17": 102.0}},
@@ -299,11 +274,7 @@ class TestSettledSession:
 
 
 class TestWindow:
-    """Each run passes every settled close its download held. A session a
-    run missed - the machine was off, or the download came back short for
-    one ticker - is filled by the next, where recording only the latest
-    close left a gap for good, and a 200-session average over a series with
-    gaps spans more than 200 sessions under the same label."""
+    """Recording every settled close from the download."""
 
     def test_a_missed_session_is_filled_in(self):
         price_history.record("SAP.DE", 100.0, on="2026-09-16")
@@ -323,8 +294,6 @@ class TestWindow:
             101.0, price_history.YAHOO)
 
     def test_a_filled_session_is_checked_against_the_one_before_it(self):
-        """Not against the latest stored close: a gap filled behind it
-        compares with its own neighbour, where the latest may be days on."""
         price_history.backfill("SAP.DE", fetch=lambda t: {
             "2026-09-16": 100.0, "2026-09-18": 150.0})
 
@@ -341,9 +310,7 @@ class TestWindow:
 
 
 class TestUnknownQuoteUnit:
-    """History in an unknown unit is not history. Stored unscaled it would sit
-    beside converted daily closes and read as a corporate action, re-seeding
-    back to the same raw values on every run."""
+    """History with an unknown quote unit is not stored."""
 
     @pytest.fixture
     def blind(self, monkeypatch):
@@ -366,7 +333,6 @@ class TestUnknownQuoteUnit:
         assert not price_history.path_for("BATS.L").exists()
 
     def test_a_known_unit_is_used_instead_of_asking(self, blind):
-        """positions.csv already records it, so the fetch need not succeed."""
         assert price_history._fetch("BATS.L", unit="GBp") == {
             "2026-09-16": 42.0, "2026-09-17": 42.08}
 
@@ -378,9 +344,7 @@ class TestUnknownQuoteUnit:
 
 
 class TestNoSettledSession:
-    """A ticker whose download held no settled session passes no closes.
-    Deciding what settled is `fetch_prices`'s job (see test_quotes.py); here
-    the point is that such a ticker is still seeded and records nothing."""
+    """Tickers with no settled closes are seeded but record nothing."""
 
     def test_a_ticker_with_no_settled_session_is_not_recorded(self):
         seeded, recorded, _ = price_history.update(
@@ -402,9 +366,7 @@ class TestNoSettledSession:
 
 
 class TestSeedRetry:
-    """A seed can fail transiently while the daily price download succeeds,
-    leaving a one-row local series. Treating any series as seeded would read
-    that as complete and never fetch the history at all."""
+    """A failed seed is retried on a later run."""
 
     def test_a_local_only_series_is_still_seeded_later(self):
         price_history.record("SAP.DE", 102.0, on=date(2026, 9, 18))
@@ -435,8 +397,7 @@ class TestSeedRetry:
 
 
 class TestSeedExcludesUnsettledBars:
-    """`_fetch` persists every timestamp it is given, so the current-session
-    check has to apply here too - `record()` will not correct it later."""
+    """The seed skips today's unsettled bar."""
 
     @pytest.fixture
     def with_today(self, monkeypatch):
@@ -460,8 +421,7 @@ class TestSeedExcludesUnsettledBars:
 
 
 class TestRefreshWithoutOverlap:
-    """A refresh happens because the scale is suspect. Rows it cannot put on
-    the provider's scale preserve the discontinuity it exists to remove."""
+    """A refresh with no overlapping day drops older rows."""
 
     def test_unscalable_rows_are_dropped_rather_than_kept_wrong(self):
         price_history.record("SAP.DE", 200.0, on=date(2024, 1, 2))

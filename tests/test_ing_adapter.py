@@ -1,12 +1,4 @@
-"""The ING adapter against a synthetic export in the real format.
-
-The fixture reproduces every quirk of a genuine Depotübersicht — cp1252
-encoding, a five-line preamble, four columns named Währung, German decimals,
-and a Depot-Gesamtwert trailer — with invented holdings.
-
-The strongest assertion available is reconciliation: the export states its own
-total, so a parse that does not reproduce it to the cent is wrong.
-"""
+"""Tests for the ING adapter against a synthetic export in the real format."""
 from pathlib import Path
 
 import pytest
@@ -29,7 +21,6 @@ def test_rejects_unrelated_csv(tmp_path):
 
 
 def test_detection_ignores_filename(tmp_path):
-    """Exports arrive under whatever name the broker chose."""
     renamed = tmp_path / "arbitrary-name-2026.csv"
     renamed.write_bytes(FIXTURE.read_bytes())
     assert adapters.detect(renamed) is ing
@@ -56,18 +47,12 @@ def test_parses_german_decimals():
 
 
 def test_reads_cp1252_umlauts():
-    """Decoding cp1252 as UTF-8 corrupts silently rather than raising.
-
-    The assertion has to land on text that actually carries an umlaut: with
-    ASCII-only holding names, a broken decode still parses and still passes.
-    """
     duerr = next(h for h in ing.parse(FIXTURE) if h.isin == "DE0005565204")
     assert duerr.name == "DÜRR AG INH O.N."
     assert "�" not in "".join(h.name for h in ing.parse(FIXTURE))
 
 
 def test_fixture_can_actually_detect_a_decode_regression():
-    """Guards the test above: a UTF-8 read of this file must corrupt it."""
     raw = FIXTURE.read_bytes()
     assert "Ü".encode("cp1252") in raw
     assert "�" in raw.decode("utf-8", errors="replace")

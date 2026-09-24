@@ -1,10 +1,4 @@
-"""Quote units.
-
-The first attempt at this normalised prices inside resolution while the
-valuation layer downloaded its own quotes and bypassed the scaling, so the
-stored row was right and every snapshot was still a hundredfold out. These
-tests cover the shared conversion and both layers that must apply it.
-"""
+"""Tests for quote units and for pricing in portfolio_monitor.py."""
 from datetime import date, timedelta
 
 import pytest
@@ -21,14 +15,12 @@ class TestConversion:
         assert quotes.as_major(1000.0, "ZAc") == (10.0, "ZAR")
 
     def test_a_major_unit_is_untouched(self):
-        """GBP is the major unit. Scaling it divided real prices by 100."""
         assert quotes.as_major(42.08, "GBP") == (42.08, "GBP")
 
     def test_an_unknown_currency_passes_through(self):
         assert quotes.as_major(100.0, "USD") == (100.0, "USD")
 
     def test_an_absent_price_stays_absent(self):
-        """A missing price is not a price of zero."""
         assert quotes.as_major(None, "GBp") == (None, "GBp")
 
     def test_an_unknown_unit_is_not_guessed(self):
@@ -36,17 +28,14 @@ class TestConversion:
 
 
 class TestValuationLayerApplies:
-    """`fetch_prices` downloads its own closes and never passes through
-    resolution, so it has to scale them itself."""
+    """`fetch_prices` scales minor-unit prices."""
 
     @pytest.fixture
     def pm(self, monkeypatch):
         import portfolio_monitor as pm
         import pandas as pd
 
-        # A real download is indexed by trading day. Without one the date
-        # handling raised and was swallowed, so this passed on the back of an
-        # exception rather than on the scaling it claims to test.
+        # Indexed by trading day, like a real download.
         idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
         frame = pd.DataFrame({"Close": [4200.0, 4208.0]}, index=idx)
         monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
@@ -76,8 +65,7 @@ class TestValuationLayerApplies:
 
 
 class TestVolumeCapture:
-    """Volume rides in on the same download as price, for every settled
-    session - it needs no Quote, since a share count carries no currency."""
+    """Volumes captured by `fetch_prices`."""
 
     @pytest.fixture
     def pm(self, monkeypatch):
@@ -103,8 +91,6 @@ class TestVolumeCapture:
                                "2026-09-17": pytest.approx(1_200_000.0)}
 
     def test_no_volume_column_leaves_it_unset_not_zero(self, monkeypatch):
-        """The download this test doubles for has no Volume column at all -
-        the ordinary shape whenever the provider does not return one."""
         import portfolio_monitor as pm
         import pandas as pd
 
@@ -122,10 +108,6 @@ class TestVolumeCapture:
         assert out.volumes == {}
 
     def test_a_nan_volume_is_not_a_number_either(self, monkeypatch):
-        """A missing volume can arrive as NaN rather than an absent column -
-        float(nan) does not raise, so this is not caught by the except
-        clause. Left as NaN it survives every `is not None` check downstream
-        and crashes on round(nan) inside volume._write()."""
         import math
         import portfolio_monitor as pm
         import pandas as pd
@@ -147,10 +129,7 @@ class TestVolumeCapture:
 
 
 class TestVolumeWithoutClose:
-    """Volume is read from its own column, not from the sessions that have a
-    close. Otherwise a settled row with a real volume and a missing close
-    loses that volume, and a seeded series is never backfilled to recover
-    it."""
+    """Volumes on rows that have no close."""
 
     def _out(self, monkeypatch, closes):
         import portfolio_monitor as pm
@@ -182,10 +161,7 @@ class TestVolumeWithoutClose:
 
 
 class TestUnconfirmedUnit:
-    """A failed unit lookup looks exactly like a major-unit quote. Assuming
-    the latter values a pence quote as pounds, so the position is left
-    unpriced instead - the dashboard reports those and excludes them from the
-    total, which is visible, where a hundredfold overstatement is not."""
+    """Positions whose quote unit is unknown."""
 
     @pytest.fixture
     def pm(self, monkeypatch):
@@ -209,8 +185,6 @@ class TestUnconfirmedUnit:
         assert out.current_price is None
 
     def test_volume_is_captured_even_when_the_unit_cannot_be(self, monkeypatch):
-        """Volume carries no currency, so it needs no Quote - an unresolved
-        unit must not also withhold volume, which does not depend on it."""
         import portfolio_monitor as pm
         import pandas as pd
 
@@ -231,9 +205,6 @@ class TestUnconfirmedUnit:
         assert out.volumes["2026-09-17"] == pytest.approx(1_200_000.0)
 
     def test_volumes_are_independent_of_closes(self, monkeypatch):
-        """Volume is carried apart from closes - sharing one map of sessions
-        would silently drop a volume whose quote unit never resolved, since
-        no close is captured for it."""
         import portfolio_monitor as pm
         import pandas as pd
 
@@ -253,16 +224,12 @@ class TestUnconfirmedUnit:
         assert set(out.volumes) == {"2026-09-16", "2026-09-17"}
 
     def test_a_recorded_unit_survives_a_failed_lookup(self, pm):
-        """This is the point of storing it: resolution already established the
-        unit, so the valuation layer never depends on the network for it."""
         pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP",
                           quote_currency="GBp")
         [out] = pm.fetch_prices([pos])
         assert out.current_price == pytest.approx(42.08)
 
     def test_the_settled_session_is_recorded_not_the_run_date(self, pm):
-        """A weekend run downloads Friday's close. Filing it under Saturday
-        invents a trading day, and the same-day guard then locks it in."""
         pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP",
                           quote_currency="GBp")
         [out] = pm.fetch_prices([pos])
@@ -277,9 +244,7 @@ class TestUnconfirmedUnit:
 
 
 class TestRunAfterTheClose:
-    """The schedule runs at 23:00, when the latest bar is today's and not yet
-    settled. Recording only the latest bar meant every scheduled run recorded
-    nothing - the price series stopped growing after its seed, silently."""
+    """A run after the close, when today's bar is unsettled."""
 
     @pytest.fixture
     def out(self, monkeypatch):
@@ -318,9 +283,7 @@ class TestRunAfterTheClose:
 
 
 class TestMissingRate:
-    """An unavailable rate used to default to 1.0, valuing a foreign holding
-    as though it were domestic - wrong by whatever the exchange rate is, and
-    reported as a price."""
+    """Positions whose currency has no exchange rate."""
 
     def test_a_currency_without_a_rate_is_omitted(self, monkeypatch):
         import portfolio_monitor as pm
@@ -339,9 +302,6 @@ class TestMissingRate:
         assert pos.current_price is None
 
     def test_a_missing_rate_leaves_the_listings_closes_alone(self):
-        """The rate is about valuing the portfolio; the closes are about the
-        instrument. The series used to be fed the price the valuation had
-        just cleared, so a failed FX lookup dropped real closes from it."""
         import portfolio_monitor as pm
         pos = pm.Position(ticker="X.QQ", quantity=10, currency="XXX",
                           current_price=100.0, previous_close=100.0,
@@ -359,10 +319,7 @@ class TestMissingRate:
 
 
 class TestQuoteType:
-    """A bare float cannot say whether it is pounds or pence, or whether its
-    session has closed. Six review rounds found that same gap in six places.
-    A Quote cannot be built without the unit, so a later reader has nothing
-    left to forget."""
+    """The Quote type."""
 
     TODAY = date(2026, 9, 18)
 
@@ -372,8 +329,6 @@ class TestQuoteType:
         assert (q.price, q.currency) == (42.08, "GBP")
 
     def test_an_unknown_unit_yields_no_quote(self):
-        """Not a quote in an assumed unit. Guessing has been the single most
-        expensive assumption in this codebase."""
         assert Quote.from_provider(4208.0, None) is None
         assert Quote.from_provider(4208.0, "") is None
 
@@ -386,7 +341,6 @@ class TestQuoteType:
         assert q.settled
 
     def test_todays_session_is_not_settled(self):
-        """The bar may still be in progress and the provider flags nothing."""
         q = Quote.from_provider(100.0, "EUR", session=self.TODAY,
                                 today=self.TODAY)
         assert not q.settled
@@ -403,11 +357,6 @@ class TestQuoteType:
 
     def test_a_conversion_keeps_the_rate_and_what_it_started_from(
             self, monkeypatch):
-        """The pence price, the rate and the result are all recoverable.
-
-        A bare float cannot say whether a rate was applied, which is how 1.0
-        came to be defaulted in seven places.
-        """
         from market import fx
         monkeypatch.setattr(fx, "rate", lambda c, b, on=None: 1.16)
         c = Quote.from_provider(4208.0, "GBp").converted("EUR", fx)
@@ -422,20 +371,13 @@ class TestQuoteType:
         assert Quote.from_provider(100.0, "EUR").converted("XXX", fx) is None
 
     def test_a_quote_is_immutable(self):
-        """The unit travels with the price; neither can drift from the other."""
         q = Quote.from_provider(100.0, "EUR")
         with pytest.raises(Exception):
             q.price = 1.0
 
 
 class TestCurrenciesNeeded:
-    """Every currency a rate is needed for, cost bases included.
-
-    The CLI built its rate set from listing currencies alone. A cost basis in
-    a third currency then reached cost_of() without a rate, and that
-    position's P&L dropped out of the report in silence - while snapshot.py,
-    which used the helper, handled the same positions correctly.
-    """
+    """Currencies a rate is fetched for."""
 
     def test_includes_the_cost_currency(self):
         import portfolio_monitor as pm
@@ -444,7 +386,6 @@ class TestCurrenciesNeeded:
         assert pm.currencies([pos]) == {"USD", "EUR"}
 
     def test_a_third_currency_is_not_lost(self):
-        """Listing, cost and base can all differ."""
         import portfolio_monitor as pm
         pos = pm.Position(ticker="BATS.L", quantity=1, currency="GBP",
                           cost_currency="CHF", avg_cost=100.0)
@@ -466,10 +407,7 @@ class TestCurrenciesNeeded:
 
 
 class TestPartialPnlTotal:
-    """A total that silently excludes positions states a sum of the rows that
-    happened to work as though it were the portfolio. fetch_fx_rates omits a
-    pair it cannot price rather than inventing 1.0, so this is reachable even
-    after every currency has been requested."""
+    """Text report P&L total when some positions have no rate."""
 
     def report(self):
         import portfolio_monitor as pm
@@ -503,10 +441,7 @@ class TestPartialPnlTotal:
 
 
 class TestPartialPortfolioTotal:
-    """A total that silently omits positions is a partial sum presented as
-    the portfolio. Position details filters on current_price, so an omitted
-    ticker vanishes from the table too - a reader who is not told cannot
-    distinguish a smaller portfolio from an understated one."""
+    """Text report total when some positions are unvalued."""
 
     def report(self):
         import portfolio_monitor as pm
@@ -540,9 +475,7 @@ class TestPartialPortfolioTotal:
 
 
 class TestDailyChangeCompleteness:
-    """The daily change is computed from the same exclusion as the total, so
-    marking only the total lets a large move in an omitted position be
-    presented as a complete figure."""
+    """Text report daily change when some positions are unvalued."""
 
     def report(self):
         import portfolio_monitor as pm

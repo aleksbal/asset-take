@@ -1,9 +1,4 @@
-"""Exchange rates from the provider, current and historical.
-
-Two copies of this existed and disagreed: the valuation one fell back to a
-rate of 1.0 for a pair it could not fetch, which values a foreign holding as
-though it were domestic.
-"""
+"""Tests for market/fx.py: current and historical exchange rates."""
 from datetime import date
 
 import pandas as pd
@@ -19,7 +14,7 @@ def clear_caches():
 
 
 class Pair:
-    """A provider that knows one direction of one pair."""
+    """A fake provider that knows one direction of one pair."""
 
     def __init__(self, known, price, closes=None):
         self.known, self.price, self.closes = known, price, closes
@@ -50,12 +45,10 @@ class TestSpot:
         assert fx.rate("USD", "EUR") == pytest.approx(0.87)
 
     def test_the_reverse_pair_is_inverted(self, monkeypatch):
-        """The provider names a pair one way round; both are tried."""
         monkeypatch.setattr(fx.yf, "Ticker", Pair("EURUSD=X", 1.25))
         assert fx.rate("USD", "EUR") == pytest.approx(0.8)
 
     def test_an_unavailable_pair_is_none_not_one(self, monkeypatch):
-        """1.0 is a rate. None is an answer the caller can act on."""
         monkeypatch.setattr(fx.yf, "Ticker", Pair("NOPE=X", 1.0))
         assert fx.rate("XXX", "EUR") is None
 
@@ -74,13 +67,9 @@ class TestHistorical:
         assert fx.rate("USD", "EUR", on=date(2026, 9, 16)) == pytest.approx(0.92)
 
     def test_a_gap_takes_the_last_close_before_it(self, series):
-        """Weekends and holidays have no close; the rate that applied is the
-        one it was last fixed at."""
         assert fx.rate("USD", "EUR", on=date(2026, 9, 15)) == pytest.approx(0.90)
 
     def test_a_date_before_the_window_is_none(self, series):
-        """The earliest rate we hold is not the rate that applied in 2001.
-        Returning it would look like an answer."""
         assert fx.rate("USD", "EUR", on=date(2001, 1, 1)) is None
 
     def test_a_date_after_the_window_takes_the_latest(self, series):
@@ -101,10 +90,7 @@ class TestConvert:
 
 
 class TestUnusableRates:
-    """NaN is truthy. A plain truth test accepts it, caches it, and every
-    position in that currency - and the portfolio total with them - becomes
-    NaN. Zero and negatives are not rates either, and inverting them is worse
-    than having nothing."""
+    """NaN, zero and negative rates are rejected."""
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 0.0, -1.5,
                                      None, "x"])
@@ -114,8 +100,6 @@ class TestUnusableRates:
 
     def test_the_reverse_pair_is_tried_when_the_first_is_unusable(self,
                                                                  monkeypatch):
-        """A NaN on the direct pair must not stop the fallback, which is what
-        caching it did."""
         class EitherWay:
             def __call__(self, symbol):
                 self.symbol = symbol

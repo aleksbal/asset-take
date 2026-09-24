@@ -1,9 +1,4 @@
-"""Dashboard computation over holdings that state no cost basis.
-
-This is where the missing-cost bug surfaced: `canonical.read()` raised on the
-empty field, so any import from a source without cost data killed the whole
-dashboard rather than simply omitting P&L.
-"""
+"""Tests for the report built by views/portfolio.py and its rendering."""
 from datetime import date
 
 import pytest
@@ -30,13 +25,6 @@ def snapshot(**kw):
 
 
 def holdings(sap_cost=None, alv_cost=None):
-    """The holdings the default snapshot was taken from.
-
-    A test about missing cost data must still hold the same positions: the
-    dashboard refuses to render a snapshot against a different portfolio, and
-    an empty map states "no longer held", which is a different claim from
-    "held, but states no cost".
-    """
     return {"SAP.DE": Holding(isin="DE0007164600", name="SAP SE", quantity=4,
                               currency="EUR", avg_cost=sap_cost),
             "ALV.DE": Holding(isin="DE0008404005", name="Allianz SE", quantity=1,
@@ -44,13 +32,6 @@ def holdings(sap_cost=None, alv_cost=None):
 
 
 def matched(sap_cost=None, alv_cost=None):
-    """A snapshot and the holdings it was taken from, agreeing on everything.
-
-    The dashboard refuses a snapshot that disagrees with holdings on any field
-    it renders, cost basis included. A test about cost data must therefore
-    state the same cost on both sides - stating it on one was the mixed
-    vintage the guard exists to catch.
-    """
     snap = snapshot(positions=[
         {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
          "previous_close": 198.0, "currency": "EUR", "avg_cost": sap_cost},
@@ -79,7 +60,6 @@ def test_omits_pnl_where_none_exists_rather_than_failing():
 
 
 def test_values_a_position_absent_from_holdings():
-    """A snapshot may name a ticker the holdings file no longer carries."""
     rows = portfolio.rows(snapshot(), {}, {})
     assert len(rows) == 2
     assert all(r["position"]["pnl"] is None for r in rows)
@@ -95,7 +75,6 @@ def test_renders_a_table_with_mixed_cost_availability():
 
 
 def test_donut_folds_beyond_seven_into_other():
-    """Categorical hues are assigned in fixed order and never cycled."""
     positions = [{"ticker": f"T{i}", "quantity": 1, "current_price": 100.0,
                   "previous_close": 100.0, "currency": "EUR"} for i in range(10)]
     rows = portfolio.rows(snapshot(positions=positions, total_value=1000.0), {}, {})
@@ -105,8 +84,7 @@ def test_donut_folds_beyond_seven_into_other():
 
 
 class TestUnpricedPositions:
-    """The provider can fail for one ticker while succeeding for the rest.
-    That killed the dashboard outright: float * None."""
+    """Positions the provider could not price."""
 
     def unpriced_snapshot(self):
         return snapshot(positions=[
@@ -127,7 +105,6 @@ class TestUnpricedPositions:
         assert broken["position"].get("value") is None
 
     def test_unpriced_is_not_valued_at_zero(self):
-        """Zero would understate the total while looking complete."""
         rows = portfolio.rows(self.unpriced_snapshot(), {}, {})
         assert next(r for r in rows if r["ticker"] == "BROKEN.XX")["position"].get("value") != 0
 
@@ -147,9 +124,7 @@ class TestUnpricedPositions:
 
 
 class TestUnknownPortfolioPnl:
-    """An unknown total P&L must not render as a gain of zero. Every position
-    in a file without a cost-basis column lands here, so the headline figure
-    would otherwise read `+0 EUR` for an entire portfolio."""
+    """Total P&L when no position states a cost basis."""
 
     def _html(self, pair, tmp_path, monkeypatch):
         snap, by_ticker = pair
@@ -173,9 +148,7 @@ class TestUnknownPortfolioPnl:
 
 
 class TestForeignCurrencyCostBasis:
-    """`avg_cost` is stated in the holding's currency. The value is converted
-    to the base currency, so the cost must be too - otherwise the exchange
-    rate itself is reported as a gain or loss."""
+    """Cost bases converted to the base currency."""
 
     def usd_snapshot(self):
         return snapshot(
@@ -199,8 +172,7 @@ class TestForeignCurrencyCostBasis:
 
 
 class TestMissingCostNote:
-    """The note must name the actual reason. It described a currency mismatch
-    the code no longer performs, sending the reader after the wrong fix."""
+    """The note explaining a missing cost basis."""
 
     def test_note_reports_an_absent_cost_basis(self, tmp_path, monkeypatch):
         monkeypatch.setattr(dashboard, "OUT", tmp_path / "out.html")
@@ -214,16 +186,9 @@ class TestMissingCostNote:
 
 
 class TestCostInAnotherCurrency:
-    """A cost basis need not share the listing's currency any more.
-
-    It used to be dropped on a mismatch, which is why the dashboard never met
-    this case. The conversion it did have fell back to the *position's* rate
-    where the holding's currency was absent - a USD cost converted at the EUR
-    rate, reported as P&L.
-    """
+    """Cost bases in a currency other than the listing's."""
 
     def usd_listing(self):
-        """A EUR cost basis against a listing quoted in USD."""
         return snapshot(
             total_value=87.0, fx_rates={"EUR": 1.0, "USD": 0.87},
             positions=[{"ticker": "GE", "quantity": 1, "current_price": 100.0,
@@ -235,7 +200,6 @@ class TestCostInAnotherCurrency:
                               quantity=1, currency="EUR", avg_cost=avg_cost)}
 
     def test_the_cost_is_converted_on_its_own_rate(self):
-        """80 EUR cost, 100 USD value = 87 EUR. A 7 EUR gain, not a 13 loss."""
         row = portfolio.rows(self.usd_listing(), self.held(), {})[0]
         assert row["position"]["pnl"] == pytest.approx(7.0)
 
@@ -244,16 +208,12 @@ class TestCostInAnotherCurrency:
         assert row["position"]["value"] == pytest.approx(87.0)
 
     def test_a_cost_currency_without_a_rate_yields_no_pnl(self):
-        """Not a P&L computed at the position's rate, which is a different
-        number wearing the right shape."""
         snap = self.usd_listing()
         snap["positions"][0]["cost_currency"] = "XXX"
         row = portfolio.rows(snap, self.held(), {})[0]
         assert row["position"]["pnl"] is None and row["position"]["value"] == pytest.approx(87.0)
 
     def test_a_cost_without_a_rate_is_not_reported_as_stating_none(self):
-        """Different claims: one is a fact about the holding, the other about
-        our data. Folding them together told the reader the wrong one."""
         snap = self.usd_listing()
         snap["positions"][0]["cost_currency"] = "XXX"
         row = portfolio.rows(snap, self.held(), {})[0]
@@ -266,14 +226,7 @@ class TestCostInAnotherCurrency:
 
 
 class TestLegacySnapshotCostCurrency:
-    """Snapshots written before positions carried a cost currency.
-
-    That writer emitted a cost basis only where the listing currency and the
-    holding currency agreed, and blanked it otherwise - so the position's own
-    `currency` is the denomination, recoverable from the snapshot itself.
-    Reading today's holding currency instead reinterprets an old number under
-    a denomination it never had.
-    """
+    """Snapshots written before positions carried a cost currency."""
 
     def legacy(self, listing="USD"):
         snap = snapshot(
@@ -288,13 +241,10 @@ class TestLegacySnapshotCostCurrency:
                               quantity=1, currency=currency, avg_cost=80.0)}
 
     def test_the_cost_is_read_in_the_snapshots_own_currency(self):
-        """80 USD cost, 100 USD value, at 0.87: a 20 USD gain = 17.40 EUR."""
         row = portfolio.rows(self.legacy(), self.held(), {})[0]
         assert row["position"]["pnl"] == pytest.approx(17.4)
 
     def test_a_later_holding_currency_change_does_not_reinterpret_it(self):
-        """`mismatch()` accepts this snapshot - quantity and the numeric cost
-        are unchanged - so the dashboard must not read the old 80 as EUR."""
         row = portfolio.rows(self.legacy(), self.held("EUR"), {})[0]
         assert row["position"]["pnl"] == pytest.approx(17.4)      # not 87 - 80 = 7
 
@@ -306,12 +256,7 @@ class TestLegacySnapshotCostCurrency:
 
 
 class TestBaseCurrencyLabels:
-    """The base currency is configurable, so it cannot be a literal.
-
-    `snapshot.py` used to pass None to load_config and always got EUR, which
-    made the hardcoded labels correct by accident. Reading data/config.json
-    made the setting reachable and the labels wrong.
-    """
+    """Labels use the configured base currency."""
 
     def _html(self, base, tmp_path, monkeypatch):
         snap, held = matched(sap_cost=150.0)
@@ -333,8 +278,6 @@ class TestBaseCurrencyLabels:
         assert "> USD</span>" in html
 
     def test_no_eur_label_survives_a_usd_snapshot(self, tmp_path, monkeypatch):
-        """Every label, not just the headline - the daily change and the
-        chart tooltip carried their own copy of the literal."""
         html = self._html("USD", tmp_path, monkeypatch)
         assert "EUR" not in html
 
@@ -343,12 +286,7 @@ class TestBaseCurrencyLabels:
 
 
 class TestMixedBaseCurrencies:
-    """Totals are stored in whatever base produced them.
-
-    Changing `base_currency` makes every earlier total a different quantity.
-    Plotting them in one series draws the switch as a gain and labels the old
-    points with the new currency.
-    """
+    """Value chart across a change of base currency."""
 
     def snap(self, day, base, total):
         s = snapshot(date=day, base_currency=base, total_value=total)
@@ -367,8 +305,6 @@ class TestMixedBaseCurrencies:
         assert [s["date"] for s in kept] == ["2026-09-18"]
 
     def test_a_base_that_changed_and_changed_back_is_not_spliced(self):
-        """Every-match would join two EUR runs across the USD gap between
-        them and draw a line through a discontinuity."""
         snaps = [self.snap("2026-09-16", "EUR", 100.0),
                  self.snap("2026-09-17", "USD", 118.0),
                  self.snap("2026-09-18", "EUR", 102.0)]
@@ -392,14 +328,7 @@ class TestMixedBaseCurrencies:
 
 
 class TestStaleSnapshot:
-    """The dashboard values a snapshot but reads the cost basis from holdings.
-    Where the two describe different portfolios, every figure still renders
-    and none of them is right - so it must refuse rather than blend them.
-
-    This is what an import without a snapshot after it produced: a position
-    valued on 300 shares against the cost of 640 reported a 44% loss, and
-    positions sold the day before were reported as holdings lacking cost data.
-    """
+    """Refusing a snapshot that does not match the holdings on file."""
 
     def test_agrees_where_the_snapshot_matches(self):
         assert portfolio.mismatch(snapshot(), holdings()) == ([], [], [])
@@ -418,20 +347,12 @@ class TestStaleSnapshot:
         assert added == ["RHM.DE"] and not gone and not changed
 
     def test_catches_a_quantity_change_the_tickers_hide(self):
-        """Buying more of something already held leaves the ticker sets equal
-        while making every derived figure for that position wrong."""
         held = holdings()
         held["SAP.DE"].quantity = 9
         gone, added, changed = portfolio.mismatch(snapshot(), held)
         assert changed == ["SAP.DE quantity 4 -> 9"] and not gone and not added
 
     def test_catches_a_cost_change_the_quantities_hide(self):
-        """A broker correction, or a sell-and-rebuy at the same size.
-
-        Quantity is unchanged, so a check on quantities alone accepts the
-        snapshot and then values it against a cost basis from another day -
-        the same hybrid, reached by a different route.
-        """
         snap = snapshot(positions=[
             {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
              "previous_close": 198.0, "currency": "EUR", "avg_cost": 150.0}])
@@ -441,7 +362,6 @@ class TestStaleSnapshot:
         assert changed == ["SAP.DE cost 150 -> 175"] and not gone and not added
 
     def test_catches_a_cost_basis_that_appeared(self):
-        """Absent and present are different claims, not a rounding difference."""
         snap = snapshot(positions=[
             {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
              "previous_close": 198.0, "currency": "EUR", "avg_cost": None}])
@@ -450,8 +370,6 @@ class TestStaleSnapshot:
         assert portfolio.mismatch(snap, held)[2] == ["SAP.DE cost — -> 150"]
 
     def test_catches_a_cost_currency_change(self):
-        """Re-resolving to a listing in another currency moves the unit the
-        cost basis is stated in, while every number stays the same."""
         snap = snapshot(positions=[
             {"ticker": "GE", "quantity": 4, "current_price": 200.0,
              "previous_close": 198.0, "currency": "USD", "avg_cost": 150.0,
@@ -461,8 +379,6 @@ class TestStaleSnapshot:
         assert portfolio.mismatch(snap, held)[2] == ["GE cost currency USD -> EUR"]
 
     def test_a_snapshot_silent_on_cost_currency_is_not_a_change(self):
-        """Snapshots written before positions carried one say nothing about
-        it, which is not the same as disagreeing."""
         snap = snapshot(positions=[
             {"ticker": "SAP.DE", "quantity": 4, "current_price": 200.0,
              "previous_close": 198.0, "currency": "EUR", "avg_cost": 150.0}])
@@ -492,13 +408,7 @@ class TestStaleSnapshot:
 
 
 class TestTrendColumns:
-    """Every parameter renders, and one the series cannot support renders an
-    em dash rather than a blank or a zero - absent and neutral are different
-    claims, and a reader cannot tell them apart from an empty cell.
-
-    The renderer is keyed on a parameter's unit, never its name. That is what
-    lets a parameter added to the registry appear here without this file or
-    render/html.py being touched."""
+    """Parameter columns, including absent values."""
 
     def test_a_fall_shows_its_size(self):
         assert "-12.4%" in page.cell(-12.4, "fall")
@@ -511,28 +421,22 @@ class TestTrendColumns:
             assert "\u2014" in page.cell(None, unit)
 
     def test_an_absent_metric_is_not_rendered_as_zero(self):
-        """A missing 200-day average is not 'at its average'."""
         assert "0" not in page.cell(None, "percent")
 
     def test_a_small_fall_is_not_marked_as_a_decline(self):
-        """Colour is a claim. A 2% wobble is not one."""
         assert "dn" not in page.cell(-2.0, "fall")
 
     def test_a_large_fall_is(self):
         assert "dn" in page.cell(-12.4, "fall")
 
     def test_a_fall_is_never_coloured_green(self):
-        """Its sign carries no information: a drawdown is always a fall."""
         assert "up" not in page.cell(-0.1, "fall")
 
     def test_an_index_is_left_neutral(self):
-        """30 and 70 are conventional markers, not thresholds to act on."""
         cell = page.cell(82.0, "index")
         assert "up" not in cell and "dn" not in cell
 
     def test_a_value_rounding_to_zero_carries_no_sign(self):
-        """"-0.0%" and "+0.0%" both claim a direction the displayed
-        magnitude does not show, for percent, fall or volume alike."""
         for unit in ("percent", "fall", "volume"):
             assert page.cell(-0.02, unit) == '<td class="n">0.0%</td>'
             assert page.cell(0.0, unit) == '<td class="n">0.0%</td>'
@@ -543,7 +447,6 @@ class TestTrendColumns:
         assert "up" not in cell and "dn" not in cell
 
     def test_volume_trend_is_signed_but_uncoloured(self):
-        """Above or below its own average, neither direction is a gain."""
         cell = page.cell(45.0, "volume")
         assert "+45.0%" in cell
         assert "up" not in cell and "dn" not in cell
@@ -555,13 +458,9 @@ class TestTrendColumns:
             assert declared["label"] in markup
 
     def test_a_header_explains_itself(self):
-        """What a column means travels with it, for the reader and the tooltip."""
         assert ix.RSI.means in page.table([])
 
     def test_an_unpriced_rows_ownership_columns_still_add_up(self):
-        """The colspan covers only the price-derived columns - name, qty
-        and every parameter cell render on their own, so together they
-        still have to match the header, or the row shears sideways."""
         markup = page.table([])
         header = markup.count("<th") - markup.count("<thead")   # <thead matches <th
         units = [(d["key"], d["unit"]) for d in ix.declared()]
@@ -574,9 +473,6 @@ class TestTrendColumns:
         assert colspan + individual_cells == header
 
     def test_an_unpriced_row_still_shows_a_volume_only_parameter(self):
-        """volume_trend comes from the stored volume series, independent of
-        today's price or FX rate - an unpriced row must not hide it behind
-        the same "no price available" span that covers value and P&L."""
         units = [(d["key"], d["unit"]) for d in ix.declared()]
         row = page._row({"priced": False, "name": "X", "ticker": "X",
                          "values": {"volume_trend": 42.0},
@@ -585,10 +481,7 @@ class TestTrendColumns:
 
 
 class TestTrendUsesTheDisplayedPrice:
-    """The stored series excludes the current session, because an in-progress
-    close cannot be corrected once written. The row shows that live price
-    though, so a position that moved sharply today would otherwise display
-    today's price beside yesterday's drawdown."""
+    """Parameters measured against the live price."""
 
     @pytest.fixture
     def series(self, monkeypatch):
@@ -605,7 +498,6 @@ class TestTrendUsesTheDisplayedPrice:
         assert m["last"] == 150.0
 
     def test_it_is_not_written_back(self, series, monkeypatch):
-        """Transient. Writing it would fix an intraday value as a close."""
         written = []
         monkeypatch.setattr(portfolio.price_history, "record",
                             lambda *a, **k: written.append(a))
@@ -624,9 +516,6 @@ class TestTrendUsesTheDisplayedPrice:
         assert portfolio._series("SAP.DE", price=150.0) == {}
 
     def test_a_stale_quote_does_not_invent_a_session(self, series):
-        """Regenerating the dashboard without a fresh snapshot would append
-        the last snapshot's price under a new date, fabricating a session
-        across whatever gap had passed and resetting days_since_peak."""
         m = portfolio._series("SAP.DE", price=999.0, on="2025-06-01")
         assert m["last"] == 100.0
 
@@ -635,9 +524,6 @@ class TestTrendUsesTheDisplayedPrice:
         assert m["last"] == 999.0
 
     def test_a_settled_quote_is_not_re_entered_as_live(self, series):
-        """A snapshot taken on a weekend is dated later than the close it
-        holds. Treating that close as a new observation advances Wilder's
-        smoothing with a duplicate zero change."""
         stored_last = "2026-02-04"
         m = portfolio._series("SAP.DE", price=100.0, on=stored_last)
         assert m["sessions"] == 400
@@ -645,8 +531,6 @@ class TestTrendUsesTheDisplayedPrice:
 
     def test_positions_passes_the_settled_date_not_the_snapshot_date(
             self, series, monkeypatch):
-        """The wiring, not just the helper: a snapshot dated after the close
-        it holds must not re-enter that close as a live observation."""
         seen = {}
         monkeypatch.setattr(portfolio, "_series",
                             lambda t, price=None, on=None: seen.update(on=on) or {})
@@ -671,9 +555,7 @@ class TestTrendUsesTheDisplayedPrice:
 
 
 class TestSeriesIncludesVolume:
-    """`_series` folds a listing's volume history in alongside its price
-    history - a separate store, so a listing with one and not the other is
-    ordinary, not an error."""
+    """`_series` with price history, volume history, or both."""
 
     @pytest.fixture
     def closes(self, monkeypatch):
@@ -701,9 +583,6 @@ class TestSeriesIncludesVolume:
         assert m["volume_trend"] is not None
 
     def test_volume_trend_needs_no_price_series(self, monkeypatch):
-        """The two stores are independent: a listing whose price history is
-        missing or not yet seeded must still get volume_trend from its own
-        store, rather than being gated on a series it doesn't need."""
         from datetime import date, timedelta
         monkeypatch.setattr(portfolio.price_history, "load", lambda t: {})
         start = date(2025, 1, 1)
@@ -717,8 +596,7 @@ class TestSeriesIncludesVolume:
 
 
 class TestIncompleteAggregate:
-    """A headline P&L that silently omits positions states the sum of the
-    rows that happened to convert as though it were the portfolio."""
+    """Headline P&L when some positions cannot be converted."""
 
     def pair(self):
         snap, held = matched(sap_cost=150.0, alv_cost=100.0)
@@ -744,7 +622,6 @@ class TestIncompleteAggregate:
         assert "no available rate" in html and "ALV.DE" in html
 
     def test_it_is_not_called_a_missing_cost_basis(self, tmp_path, monkeypatch):
-        """The basis is stated; the rate is what is missing."""
         html = self._html(self.pair(), tmp_path, monkeypatch)
         assert "states no cost basis" not in html
 
@@ -757,11 +634,6 @@ class TestIncompleteAggregate:
 
     def test_an_unpriced_warning_survives_a_complete_cost_basis(
             self, tmp_path, monkeypatch):
-        """The notes were chained as `A + B + C if no_cost else ""`, which
-        Python groups as `(A + B + C) if no_cost else ""`. A portfolio where
-        every position stated a cost basis therefore suppressed the rest -
-        including the one saying the total is understated, which is the last
-        warning that should ever go missing."""
         snap, held = matched(sap_cost=150.0, alv_cost=100.0)
         snap["positions"][1]["current_price"] = None      # ALV.DE unpriced
         html = self._html((snap, held), tmp_path, monkeypatch)
@@ -769,12 +641,7 @@ class TestIncompleteAggregate:
 
 
 class TestNothingConverts:
-    """Every position states a cost basis and none of them converts.
-
-    `priced` is then empty and the headline fell through to "no cost basis
-    recorded" - contradicting the holdings, and contradicting the note
-    directly below it saying a rate is what is missing.
-    """
+    """Headline P&L when no cost basis converts."""
 
     def pair(self):
         snap, held = matched(sap_cost=150.0, alv_cost=100.0)
@@ -808,9 +675,7 @@ class TestNothingConverts:
 
 
 class TestIncompleteSnapshotsLeaveTheChart:
-    """A snapshot taken while an FX rate was down holds the sum of the
-    positions that could be valued. Plotted beside complete ones it draws a
-    crash and a recovery that never happened."""
+    """Incomplete snapshots are left out of the value chart."""
 
     def snap(self, day, total, priced=True):
         s = snapshot(date=day, total_value=total)
@@ -833,8 +698,6 @@ class TestIncompleteSnapshotsLeaveTheChart:
         assert kept == ["2026-09-16", "2026-09-18"]
 
     def test_completeness_needs_no_stored_flag(self):
-        """Derived from the positions, so it holds for snapshots written
-        before anyone thought to ask - no migration, no absent-means-what."""
         old = self.snap("2026-09-18", 800.0)
         assert "complete" not in old and portfolio.complete(old)
 

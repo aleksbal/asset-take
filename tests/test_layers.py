@@ -1,21 +1,4 @@
-"""The layering, enforced rather than agreed to.
-
-A rule that lives only in a document erodes the first time someone is in a
-hurry, and the erosion is invisible in review: one convenient import, and
-the next person has a precedent. These two tests fail instead.
-
-    render -> views -> holdings -> market
-
-`holdings` sits above `market` rather than beside it: resolving a broker
-export to a listing means fetching a price and checking it against the
-broker's own, so it genuinely needs what `market` knows. The direction that
-matters is the other one - `market` must never learn that a portfolio
-exists, which is what lets a market-wide view reuse it unchanged, and that
-has a test of its own.
-
-`paths` sits below all of them. It imports nothing from the project, so
-everything may read it without reaching sideways or up.
-"""
+"""Tests for the import rules between layers, and for the report/page split."""
 import ast
 
 import pytest
@@ -34,7 +17,6 @@ def sources(layer):
 
 
 def imported(path):
-    """Every project package this file imports, however it spells it."""
     tree = ast.parse(path.read_text())
     out = set()
     for node in ast.walk(tree):
@@ -55,18 +37,12 @@ class TestALayerOnlyUsesLayersBelowIt:
                     f"which is not below {layer}/")
 
     def test_market_never_learns_that_a_portfolio_exists(self):
-        """What makes a market-wide view able to reuse this code unchanged."""
         for path in sources("market"):
             assert "holdings" not in imported(path)
 
 
 class TestOnlyTheRendererKnowsWhatHtmlIs:
     def test_no_markup_outside_render(self):
-        """Markup below `render/` is a view that has started drawing.
-
-        Checked as a tag rather than a bare `<`, so a comparison or a type
-        annotation is not mistaken for one.
-        """
         for layer in LAYERS - {"render"}:
             for path in sources(layer):
                 text = path.read_text()
@@ -78,10 +54,7 @@ class TestOnlyTheRendererKnowsWhatHtmlIs:
 
 
 class TestARowNeedNotBeHeld:
-    """The shape a market-wide view will emit: an instrument with a price and
-    parameters, and no position at all. Nothing in `render/` may assume the
-    ownership block is there, or the claim that both views share one shape is
-    only true until something reads the file."""
+    """Rendering a row that has no position block."""
 
     def unheld(self):
         return {"ticker": "X", "name": "X Corp", "priced": True,
@@ -101,30 +74,16 @@ class TestARowNeedNotBeHeld:
         assert "55" in html.table([self.unheld()])
 
     def test_the_ownership_columns_are_absent_not_zero(self):
-        """A zero quantity is a claim about a holding; there is no holding."""
         from render import html
         markup = html.table([self.unheld()])
         assert ">0<" not in markup and "0.0%" not in markup
 
     def test_the_allocation_chart_leaves_it_out(self):
-        """It has no weight, because weight is a share of something owned."""
         from render import html
         assert 'class="seg"' not in html.donut([self.unheld()])
 
 
 def test_the_report_can_be_produced_without_a_renderer():
-    """`python -m views.portfolio` writes the report and draws nothing.
-
-    The claim that a run finishes at report.json is only true if it can
-    finish there. Run as a path rather than a module it cannot: Python puts
-    views/ on sys.path instead of the repository root and `import paths`
-    fails before __main__ is reached, which is why the module form is the
-    documented one.
-
-    Asserted on the import rather than the output, so a checkout with no
-    snapshots yet still exercises what this is about. Declining for want of
-    a snapshot is a working entry point; not resolving `paths` is not.
-    """
     import subprocess
     import sys
     done = subprocess.run([sys.executable, "-m", "views.portfolio"],
@@ -134,13 +93,7 @@ def test_the_report_can_be_produced_without_a_renderer():
 
 
 class TestThePageIsDrawnFromTheFile:
-    """`report.json` is the run's output and the page is one reader of it.
-
-    Rendering the report still in memory would leave that true only on
-    paper: nothing would exercise the file, and a figure that did not
-    survive the round trip through JSON would be right on a fresh run and
-    wrong on every later read, with no test able to tell.
-    """
+    """The page is rendered from report.json on disk."""
 
     def report(self, **totals):
         base = {"value": 1234.0, "day": 1.0, "day_pct": 0.1, "pnl": 2.0,
@@ -166,12 +119,6 @@ class TestThePageIsDrawnFromTheFile:
         assert "98 765" in (tmp_path / "out.html").read_text()
 
     def test_it_fetches_nothing_to_do_it(self, tmp_path, monkeypatch):
-        """A report already written is a finished fact about its own day.
-
-        `build()` refuses to draw a snapshot against holdings that have moved
-        on, and refusing is right - but it must still be possible to look at
-        what was recorded before they did.
-        """
         import json
 
         import dashboard
