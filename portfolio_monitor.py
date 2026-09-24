@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""
-Stock Portfolio Monitor - Main Script
-Fetches prices from Yahoo Finance, calculates P&L, generates reports.
+"""Prices the positions in positions.csv, values them in the base currency and
+writes text reports.
 
 Usage:
-    python portfolio_monitor.py --asset-take positions.csv --config config.json --output report
+    python portfolio_monitor.py -p positions.csv [-c config.json] [-o report] [-H history.json]
 """
 
 import argparse
@@ -30,41 +29,32 @@ except ImportError:
 
 @dataclass
 class Position:
-    """Represents a single asset-take position."""
+    """One position, as read from positions.csv and filled in by
+    `fetch_prices`."""
     ticker: str
     quantity: float
     currency: str
     exchange: Optional[str] = None
     avg_cost: Optional[float] = None
-    # The currency `avg_cost` is denominated in - the broker's, which is not
-    # always the listing's. Absent means it shares `currency`, which is what
-    # a positions file written before this column said implicitly.
+    # Currency of `avg_cost`; None means the same as `currency`.
     cost_currency: Optional[str] = None
-    # The unit the venue quotes in, recorded at resolution. Not the same as
-    # `currency`: London quotes pence under GBp while the position is in GBP.
+    # Unit the listing quotes in, e.g. GBp (pence) for a GBP position.
     quote_currency: Optional[str] = None
     # Populated after fetching prices
     current_price: Optional[float] = None
     previous_close: Optional[float] = None
     price_date: Optional[str] = None
     name: Optional[str] = None
-    # Every settled session in the download, as {iso date: value} - what the
-    # per-listing series record. Not current_price: the daily run is after the
-    # close, when the latest bar is today's and unsettled, so a series fed
-    # only that bar recorded nothing at all. And the whole window rather than
-    # the latest settled bar, so a run that was missed, or a download that
-    # came back short, leaves no permanent gap for the next run to step over.
-    # Neither is a field the valuation may clear: a missing exchange rate says
-    # nothing about what the listing closed at.
+    # Settled sessions in the download, as {iso date: value}, in the major
+    # currency unit. These feed the per-listing series.
     closes: dict[str, float] = field(default_factory=dict)
-    # Separate from closes because volume carries no currency: it is captured
-    # even where the quote's unit is unknown and closes stays empty.
+    # Captured even when the quote unit is unknown.
     volumes: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
 class PortfolioReport:
-    """Contains all data for the asset-take report."""
+    """Totals, movers, alerts and positions for one valuation."""
     positions: list[Position]
     base_currency: str
     fx_rates: dict[str, float]
@@ -76,16 +66,13 @@ class PortfolioReport:
     losers: list[tuple[Position, float]]
     alerts: list[str]
     timestamp: datetime
-    # Positions excluded from total_value because their listing currency had
-    # no rate. They are left unpriced rather than misvalued, so the total is
-    # understated - and a total that does not say so is a partial sum
-    # presented as the portfolio.
+    # Tickers excluded from total_value because their currency had no rate.
     unvalued: list[str] = field(default_factory=list)
 
 
 @dataclass
 class AlertConfig:
-    """Configuration for alerts."""
+    """Thresholds for alerts."""
     daily_change_threshold_pct: float = 5.0
     consecutive_days_threshold: int = 3
     target_prices: dict[str, float] = field(default_factory=dict)
@@ -94,38 +81,22 @@ class AlertConfig:
 
 @dataclass
 class Settings:
-    """Everything a run is configured with.
-
-    A tuple of (base_currency, alerts) widened every time something became
-    configurable, and each addition broke both callers.
-
-    Declared after AlertConfig so the annotation is the class itself rather
-    than a forward reference. `snapshot.py` loads this module through
-    importlib without registering it in sys.modules, and dataclasses cannot
-    resolve a string annotation against a module it cannot find.
-    """
+    """Base currency and alert settings, as returned by `load_config`."""
     base_currency: str = 'EUR'
     alerts: AlertConfig = field(default_factory=AlertConfig)
-    # Whether resolution should prefer a listing quoting in the holding's own
-    # currency over one with more history. Off; see resolve.PREFER_QUOTE_CURRENCY.
+    # See resolve.PREFER_QUOTE_CURRENCY.
     prefer_quote_currency: bool = False
 
 
 def parse_number(s, decimal_sep=None):
-    """Parse a number in either plain or German notation.
+    """Parse a number in plain or German notation, or None if it is blank.
 
-    `decimal_sep` forces the interpretation where the caller knows the locale.
-    A comma-delimited file cannot use a decimal comma unquoted, so a comma in
-    such a file is a thousands separator: '1,234' is 1234, not 1.234. Guessing
-    understates by 1000x, silently.
+    `decimal_sep` forces the decimal separator when the caller knows it.
 
-    '1.234,56' -> 1234.56   (German: dot thousands, comma decimal)
-    '205,9263'  -> 205.9263 (German decimal comma)
-    '205.9263'  -> 205.9263 (plain decimal point)
-    '1.234.567' -> 1234567  (repeated dots can only be thousands)
-
-    The original assumed German notation unconditionally and stripped every
-    dot, silently turning '30.0' into 300.
+        '1.234,56'  -> 1234.56
+        '205,9263'  -> 205.9263
+        '205.9263'  -> 205.9263
+        '1.234.567' -> 1234567
     """
     s = (s or "").strip().replace("\xa0", "").replace(" ", "")
     if not s:
@@ -148,7 +119,7 @@ def parse_number(s, decimal_sep=None):
 
 
 def load_portfolio(csv_path: str) -> list[Position]:
-    """Load asset-take positions from CSV file."""
+    """The positions in a positions CSV file."""
     positions = []
 
     with open(csv_path, 'r', encoding='utf-8-sig') as f:
@@ -192,15 +163,10 @@ def load_portfolio(csv_path: str) -> list[Position]:
                            norm_row.get('einstandskurs') or norm_row.get('kaufkurs') or '')
             avg_cost = parse_number(avg_cost_str) if avg_cost_str else None
 
-            # NOT upper-cased: the quote unit is case-significant. GBp is
-            # pence and GBP is pounds, and folding them loses the distinction
-            # the column exists to carry.
+            # Case-sensitive: GBp is pence, GBP is pounds.
             quote_currency = (norm_row.get('quote_currency') or '').strip()
 
-            # Where the file states none, the cost shares the position's
-            # currency - the assumption every positions.csv made before the
-            # column existed, and the one that held while a mismatched cost
-            # was being dropped upstream.
+            # Default: the position's currency.
             cost_currency = (norm_row.get('cost_currency') or '').strip().upper()
 
             if ticker and quantity > 0:
@@ -218,13 +184,8 @@ def load_portfolio(csv_path: str) -> list[Position]:
 
 
 def fetch_fx_rates(currencies: set[str], base_currency: str) -> dict[str, float]:
-    """Rates converting each currency to the base, omitting any unavailable.
-
-    A missing rate is left out rather than defaulted to 1.0. The old fallback
-    valued a foreign holding as though it were domestic and said so only in a
-    warning nobody reads - an error of whatever the exchange rate happens to
-    be, reported as a price.
-    """
+    """{currency: rate to `base`} for each currency; pairs without a rate
+    are omitted."""
     rates = {base_currency: 1.0}
     for currency in currencies:
         if currency == base_currency:
@@ -239,12 +200,8 @@ def fetch_fx_rates(currencies: set[str], base_currency: str) -> dict[str, float]
 
 
 def currencies(positions: list[Position]) -> set[str]:
-    """Every currency a rate is needed for.
-
-    Both the listing's and the cost basis's: they are no longer required to
-    match, so fetching rates for only the former leaves a foreign cost basis
-    unconvertible and its P&L silently absent.
-    """
+    """Every currency a rate is needed for: listing and cost-basis
+    currencies."""
     wanted = set()
     for pos in positions:
         wanted.add(pos.currency)
@@ -253,12 +210,8 @@ def currencies(positions: list[Position]) -> set[str]:
 
 
 def _converted(amount, currency, rates, base):
-    """`amount` in `base` at a rate already held, or None where none is.
-
-    Never a default of 1.0. That values a foreign amount as though it were
-    domestic - wrong by whatever the rate happens to be, and indistinguishable
-    from a correct figure once it is a bare number on a page.
-    """
+    """`amount` in `base` as a `Converted`, or None if `rates` has no rate
+    for `currency`."""
     if amount is None or not currency:
         return None
     rate = rates.get(currency)
@@ -266,12 +219,8 @@ def _converted(amount, currency, rates, base):
 
 
 def _amount(converted):
-    """The figure, or 0 where there is none.
-
-    For ordering and for a display line that has already established the
-    position is priced - never for a total, where a missing conversion must
-    stay missing rather than contribute nothing and look counted.
-    """
+    """The amount of a `Converted`, or 0 for None. For sorting and display,
+    not for totals."""
     return converted.amount if converted else 0.0
 
 
@@ -283,13 +232,9 @@ def value_of(pos: Position, rates: dict, base: str):
 
 
 def cost_of(pos: Position, rates: dict, base: str):
-    """A position's cost basis in `base`, or None where it states none.
-
-    `avg_cost` is denominated in `cost_currency` - what the broker charged in -
-    which is not always what the listing quotes in. Both sides of a P&L are
-    converted, so what is reported is the local gain expressed in the base
-    currency; we hold no rate for the purchase date and do not pretend to.
-    """
+    """The position's cost basis in `base`, or None if it has none or its
+    rate is missing. `avg_cost` is in `cost_currency` (default: the listing
+    currency)."""
     if not pos.avg_cost:
         return None
     return _converted(pos.quantity * pos.avg_cost,
@@ -297,20 +242,23 @@ def cost_of(pos: Position, rates: dict, base: str):
 
 
 def _quote_currency(ticker: str) -> Optional[str]:
-    """The unit a venue quotes in, which is not always the currency it names."""
+    """The unit `ticker` quotes in (e.g. `GBp`), or None if unknown."""
     try:
         return yf.Ticker(ticker).fast_info["currency"]
     except Exception:
         return None
 
 
-# Long enough that a missed week of runs is still filled from the download;
-# valuation reads only the last two bars, so the length costs it nothing.
+# Download window. Settled closes in it that are not yet stored get recorded.
 DOWNLOAD_PERIOD = "1mo"
 
 
 def fetch_prices(positions: list[Position]) -> list[Position]:
-    """Fetch current prices and previous close for all positions."""
+    """Fill in each position's price, previous close, name, and settled
+    closes and volumes from one batch download.
+
+    A position whose quote unit is unknown is left unpriced.
+    """
     tickers = [p.ticker for p in positions]
 
     # Batch download for efficiency
@@ -328,23 +276,16 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                 ticker_data = data[pos.ticker] if pos.ticker in data.columns.get_level_values(0) else None
 
             if ticker_data is not None and not ticker_data.empty:
-                # Volume first, and from its own column. It carries no
-                # currency, so it needs no Quote and must not be gated behind
-                # one resolving - nor behind the close: a row whose close is
-                # missing can still carry a real volume, and a download with
-                # no closes at all fails further down before reaching here.
+                # Volumes from their own column, independent of closes.
                 if 'Volume' in ticker_data:
                     for ts, vol in ticker_data['Volume'].items():
                         if ts.date() >= date.today():
-                            continue        # unsettled: not a final count
+                            continue        # not settled yet
                         try:
                             vol = float(vol)
                         except (ValueError, TypeError):
                             continue
-                        # A missing volume arrives as NaN, not an exception -
-                        # float(nan) succeeds. Left as NaN it would reach
-                        # volume._write()'s round() and crash the run after
-                        # the snapshot was already written.
+                        # NaN means no data.
                         if vol == vol:
                             pos.volumes[ts.date().isoformat()] = vol
 
@@ -357,22 +298,14 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                     pos.current_price = float(closes.iloc[-1])
                     pos.previous_close = pos.current_price
 
-                # A download returns the venue's own quote unit. London sends
-                # pence; valuing that with the pound's rate overstates the
-                # position a hundredfold. The unit is recorded at resolution
-                # so this does not depend on a lookup that can fail.
+                # Unit from positions.csv, else asked from the provider.
                 unit = pos.quote_currency or _quote_currency(pos.ticker)
                 session = closes.index[-1].date()
-                # The latest bar values the snapshot; only settled ones may
-                # enter a series. They differ on any run after the close,
-                # which is when the schedule runs.
+                # Latest bar: the snapshot price. Settled bars: the series.
                 settled = [ts for ts in closes.index if ts.date() < date.today()]
                 quote = Quote.from_provider(pos.current_price, unit,
                                             session=session)
                 if quote is None:
-                    # An unconfirmed unit is indistinguishable from a major
-                    # one, so the position is left unpriced. The dashboard
-                    # reports that; a hundredfold overstatement it cannot.
                     print(f"WARNING: no quote unit for {pos.ticker}; "
                           f"leaving it unpriced rather than assuming one")
                     pos.current_price = pos.previous_close = None
@@ -380,10 +313,7 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                     pos.current_price = quote.price
                     pos.previous_close = Quote.from_provider(
                         pos.previous_close, unit).price
-                    # Only a settled session may be written into a series: an
-                    # in-progress bar recorded as a close is never corrected.
-                    # The live price still feeds the snapshot, which is a
-                    # point-in-time valuation and wants it.
+                    # Set only if the latest bar has settled.
                     pos.price_date = (quote.session.isoformat()
                                       if quote.settled else None)
                     for ts in settled:
@@ -407,7 +337,11 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
 def calculate_report(positions: list[Position], base_currency: str,
                     fx_rates: dict[str, float], alert_config: AlertConfig,
                     history_file: Optional[str] = None) -> PortfolioReport:
-    """Calculate asset-take metrics and generate report data."""
+    """Value the positions in `base_currency` and collect movers and alerts.
+
+    A position whose currency has no rate is left unpriced and listed in
+    `unvalued`; the total excludes it.
+    """
 
     total_value = 0.0
     total_value_previous = 0.0
@@ -425,10 +359,7 @@ def calculate_report(positions: list[Position], base_currency: str,
         if pos.current_price is None:
             continue
 
-        # No rate means no value. Defaulting to 1.0 here would undo the point
-        # of omitting it above: a USD holding counted as though it were EUR,
-        # wrong by whatever the exchange rate is. Unpriced is reported;
-        # misvalued is not.
+        # No rate: leave the position unpriced.
         value = value_of(pos, fx_rates, base_currency)
         if value is None:
             pos.current_price = pos.previous_close = None
@@ -537,9 +468,6 @@ def generate_long_report(report: PortfolioReport) -> str:
     lines.append(f"  Previous Close:   {format_currency(report.total_value_previous, report.base_currency)}")
     lines.append(f"  Daily Change:     {change_emoji} {format_currency(report.daily_change, report.base_currency)} ({report.daily_change_pct:+.2f}%){incomplete}")
     if report.unvalued:
-        # Position details filters on current_price, so these vanish from the
-        # table entirely. A reader who is not told cannot tell a smaller
-        # portfolio from an understated one.
         lines.append(f"  * excludes {len(report.unvalued)} position"
                      f"{'s' if len(report.unvalued) > 1 else ''} with no "
                      f"exchange rate ({', '.join(report.unvalued)}). The total "
@@ -571,9 +499,7 @@ def generate_long_report(report: PortfolioReport) -> str:
     # Full Position Details
     lines.append("📋 POSITION DETAILS")
     lines.append("-" * 60)
-    # The price is the listing's own, so it carries the listing's currency.
-    # 33 shares at an unlabelled 152.71 beside a value of EUR 4,386 reads as
-    # an arithmetic error rather than a conversion.
+    # Price in the listing's currency; value in the base currency.
     lines.append(f"  {'Ticker':<10} {'Shares':>10} {'Price':>14} {'Value':>14} {'Daily %':>10}")
     lines.append("  " + "-" * 56)
 
@@ -597,25 +523,16 @@ def generate_long_report(report: PortfolioReport) -> str:
     if positions_with_cost:
         lines.append("💰 UNREALIZED P&L")
         lines.append("-" * 60)
-        # Per share, both converted to the base currency. Printing the raw
-        # avg_cost beside the raw price put two different currencies in
-        # adjacent columns with nothing to say so - SPCX showed a 152.71 EUR
-        # cost against a 152.71 USD price and invited the obvious comparison.
+        # Per-share cost and price, both in the base currency.
         lines.append(f"  {'Ticker':<10} {'Avg Cost':>12} {'Current':>12} {'P&L':>14} {'P&L %':>10}")
         lines.append("  " + "-" * 56)
 
         total_unrealized = 0
         omitted = []
         for pos in positions_with_cost:
-            # Both sides converted, because they need not share a currency any
-            # more. Subtracting an unconverted cost from a converted value
-            # reports the exchange rate itself as a gain or loss.
             value = value_of(pos, report.fx_rates, report.base_currency)
             cost = cost_of(pos, report.fx_rates, report.base_currency)
-            # fetch_fx_rates omits a pair it cannot price rather than
-            # inventing 1.0, so a cost currency can still arrive without a
-            # rate. Skipping silently and then printing TOTAL states a sum of
-            # the rows that happened to work as though it were the portfolio.
+            # Positions without a rate are listed as omitted from the total.
             if value is None or cost is None or not cost.amount:
                 omitted.append(pos.ticker)
                 continue
@@ -715,13 +632,8 @@ def save_reports(report: PortfolioReport, output_base: str):
 
 
 def load_config(config_path: Optional[str] = None) -> Settings:
-    """Settings from a JSON file, or the defaults where there is none.
-
-    Falls back to `paths.CONFIG` (data/config.json), which is where an
-    instance's own settings belong. Passing None used to mean "no config at
-    all", so nothing outside the CLI ever read one - `snapshot.py` called
-    `load_config(None)` and silently got the defaults every run.
-    """
+    """Settings from `config_path`, or from `paths.CONFIG` if not given;
+    defaults where the file is missing."""
     settings = Settings()
     path = config_path or paths.CONFIG
 
@@ -761,17 +673,11 @@ def main():
     base_currency, alert_config = settings.base_currency, settings.alerts
     print(f"📌 Base currency: {base_currency}")
 
-    # Load asset-take. argparse maps --asset-take to args.asset_take; this
-    # read args.portfolio, so every invocation raised AttributeError.
+    # Load positions
     print(f"📂 Loading asset-take from: {args.asset_take}")
     positions = load_portfolio(args.asset_take)
     print(f"   Found {len(positions)} positions")
 
-    # Every currency a rate is needed for, cost bases included: a cost basis
-    # in a third currency would otherwise reach cost_of() without a rate and
-    # drop that position's P&L from the report in silence.
-    #
-    # Not bound to a local named `currencies` - that shadowed this helper.
     wanted = currencies(positions)
     print(f"💱 Currencies: {', '.join(sorted(wanted))}")
 
