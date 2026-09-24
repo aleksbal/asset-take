@@ -714,3 +714,19 @@ class TestIncompleteSnapshotsLeaveTheChart:
         dashboard.main()
         html = (tmp_path / "out.html").read_text(encoding="utf-8")
         assert "left out of the value chart" in html
+
+
+class TestSnapshotTime:
+    """The time the snapshot was taken, shown under the heading."""
+
+    def test_a_timestamp_is_shown_with_its_time(self):
+        from render.html import taken
+        assert taken("2026-09-24T08:03:37+02:00") == "Thu 24 Sep 2026, 08:03"
+
+    def test_a_date_alone_is_shown_without_a_time(self):
+        from render.html import taken
+        assert taken("2026-09-18") == "Fri 18 Sep 2026"
+
+    def test_an_unreadable_value_is_shown_as_given(self):
+        from render.html import taken
+        assert taken("yesterday") == "yesterday"
