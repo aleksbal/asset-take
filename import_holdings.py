@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Ingest a broker export -> holdings.csv (canonical) + positions.csv (for pricing).
+"""Reads a broker export and writes holdings.csv and positions.csv.
 
     ./.venv/bin/python import_holdings.py                  # newest CSV in imports/
     ./.venv/bin/python import_holdings.py <file-or-folder>
 
-Filenames are irrelevant: adapters identify their own format by content.
+The adapter is chosen by file content, not filename.
 """
 import csv
 import sys
@@ -20,12 +20,8 @@ ROOT = Path(__file__).parent
 
 
 def _de(x):
-    """Format a number the way portfolio_monitor parses it.
-
-    It applies German notation unconditionally (`str.replace('.','')`), so a
-    plain `30.0` is read as 300. Whole numbers are written without a decimal
-    part; fractions use a comma. Do not "fix" this to plain floats.
-    """
+    """`x` formatted for positions.csv: whole numbers without a decimal
+    part, fractions with a decimal comma; "" for None."""
     if x is None or x == "":
         return ""
     if float(x) == int(float(x)):
@@ -40,14 +36,8 @@ POSITION_COLUMNS = ["ticker", "quantity", "currency", "avg_cost",
 def position_row(holding, resolved):
     """One positions.csv line for a resolved holding.
 
-    `currency` is the listing's, `cost_currency` the broker's. They are
-    separate columns because they are separate facts and need not agree.
-
-    A mismatch used to drop the cost basis entirely, on the reasoning that it
-    could not be compared against the wrong unit. It can: it converts. The
-    drop is what turned the listing's currency into a selection criterion,
-    which is how a listing with one day of history came to be chosen over one
-    with 251 and had to be corrected by hand.
+    `currency` is the listing's currency and `cost_currency` the broker's; they
+    may differ.
     """
     return [resolved["ticker"], _de(holding.quantity), resolved["currency"],
             _de(holding.avg_cost), holding.currency,
@@ -57,7 +47,7 @@ def position_row(holding, resolved):
 def pick_file(arg):
     p = Path(arg).expanduser() if arg else paths.IMPORTS
     if p.is_dir():
-        # Must match what adapters accept, or a supported export is reported absent.
+        # Same suffixes the adapters accept.
         found = sorted((f for f in p.iterdir()
                         if f.suffix.lower() in adapters.generic.SUFFIXES),
                        key=lambda f: f.stat().st_mtime, reverse=True)
