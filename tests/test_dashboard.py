@@ -530,6 +530,24 @@ class TestTrendColumns:
         cell = page.cell(82.0, "index")
         assert "up" not in cell and "dn" not in cell
 
+    def test_a_value_rounding_to_zero_carries_no_sign(self):
+        """"-0.0%" and "+0.0%" both claim a direction the displayed
+        magnitude does not show, for percent, fall or volume alike."""
+        for unit in ("percent", "fall", "volume"):
+            assert page.cell(-0.02, unit) == '<td class="n">0.0%</td>'
+            assert page.cell(0.0, unit) == '<td class="n">0.0%</td>'
+
+    def test_volatility_is_a_magnitude_never_signed_or_coloured(self):
+        cell = page.cell(23.4, "vol")
+        assert "23.4%" in cell and "+" not in cell
+        assert "up" not in cell and "dn" not in cell
+
+    def test_volume_trend_is_signed_but_uncoloured(self):
+        """Above or below its own average, neither direction is a gain."""
+        cell = page.cell(45.0, "volume")
+        assert "+45.0%" in cell
+        assert "up" not in cell and "dn" not in cell
+
     def test_the_table_carries_a_header_per_declared_parameter(self):
         rows = portfolio.rows(snapshot(), {}, {})
         markup = page.table(rows)
@@ -540,14 +558,30 @@ class TestTrendColumns:
         """What a column means travels with it, for the reader and the tooltip."""
         assert ix.RSI.means in page.table([])
 
-    def test_an_unpriced_row_still_spans_the_full_table(self):
-        """The colspan has to match the header, or the row shears sideways."""
+    def test_an_unpriced_rows_ownership_columns_still_add_up(self):
+        """The colspan covers only the price-derived columns - name, qty
+        and every parameter cell render on their own, so together they
+        still have to match the header, or the row shears sideways."""
         markup = page.table([])
         header = markup.count("<th") - markup.count("<thead")   # <thead matches <th
         units = [(d["key"], d["unit"]) for d in ix.declared()]
         row = page._row({"priced": False, "name": "X", "ticker": "X",
                          "values": {}, "position": {"quantity": 1}}, units)
-        assert int(row.split('colspan="')[1].split('"')[0]) == header - 2
+        colspan = int(row.split('colspan="')[1].split('"')[0])
+        # Every <td> (name, qty, the 7-wide span, one per parameter) minus
+        # the extra 4 columns the span covers beyond its own single <td>.
+        individual_cells = row.count("<td") - 1
+        assert colspan + individual_cells == header
+
+    def test_an_unpriced_row_still_shows_a_volume_only_parameter(self):
+        """volume_trend comes from the stored volume series, independent of
+        today's price or FX rate - an unpriced row must not hide it behind
+        the same "no price available" span that covers value and P&L."""
+        units = [(d["key"], d["unit"]) for d in ix.declared()]
+        row = page._row({"priced": False, "name": "X", "ticker": "X",
+                         "values": {"volume_trend": 42.0},
+                         "position": {"quantity": 1}}, units)
+        assert "+42.0%" in row
 
 
 class TestTrendUsesTheDisplayedPrice:
@@ -634,6 +668,52 @@ class TestTrendUsesTheDisplayedPrice:
                               "currency": "EUR", "price_date": None}]
         portfolio.rows(snap, {}, {})
         assert seen["on"] == "2026-02-09"
+
+
+class TestSeriesIncludesVolume:
+    """`_series` folds a listing's volume history in alongside its price
+    history - a separate store, so a listing with one and not the other is
+    ordinary, not an error."""
+
+    @pytest.fixture
+    def closes(self, monkeypatch):
+        from datetime import date, timedelta
+        start = date(2025, 1, 1)
+        stored = {(start + timedelta(days=i)).isoformat(): (100.0, "yahoo")
+                  for i in range(30)}
+        monkeypatch.setattr(portfolio.price_history, "load",
+                            lambda t: dict(stored))
+        return stored
+
+    def test_no_volume_series_means_no_volume_trend(self, closes, monkeypatch):
+        monkeypatch.setattr(portfolio.volume_history, "load", lambda t: {})
+        m = portfolio._series("SAP.DE")
+        assert "volume_trend" not in m
+
+    def test_a_volume_series_produces_a_volume_trend(self, closes, monkeypatch):
+        from datetime import date, timedelta
+        start = date(2025, 1, 1)
+        volumes = {(start + timedelta(days=i)).isoformat(): (1_000_000.0, "yahoo")
+                   for i in range(20)}
+        monkeypatch.setattr(portfolio.volume_history, "load",
+                            lambda t: dict(volumes))
+        m = portfolio._series("SAP.DE")
+        assert m["volume_trend"] is not None
+
+    def test_volume_trend_needs_no_price_series(self, monkeypatch):
+        """The two stores are independent: a listing whose price history is
+        missing or not yet seeded must still get volume_trend from its own
+        store, rather than being gated on a series it doesn't need."""
+        from datetime import date, timedelta
+        monkeypatch.setattr(portfolio.price_history, "load", lambda t: {})
+        start = date(2025, 1, 1)
+        volumes = {(start + timedelta(days=i)).isoformat(): (1_000_000.0, "yahoo")
+                   for i in range(20)}
+        monkeypatch.setattr(portfolio.volume_history, "load",
+                            lambda t: dict(volumes))
+        m = portfolio._series("SAP.DE")
+        assert m["volume_trend"] is not None
+        assert "last" not in m       # nothing to say about a price that isn't there
 
 
 class TestIncompleteAggregate:

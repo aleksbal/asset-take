@@ -112,6 +112,51 @@ class TestMovingAverage:
         assert trends.moving_average(flat(200), 200) is not None
 
 
+class TestRealizedVol:
+    def test_a_flat_series_has_zero_volatility(self):
+        """No day-to-day move at all - the honest answer is zero, not a
+        rounding artefact near it."""
+        assert trends.realized_vol(flat(21)) == pytest.approx(0.0)
+
+    def test_too_short_a_series_has_no_volatility(self):
+        """20 closes make 19 returns, one short of the window: a shortened
+        window is a different number wearing the 20-session label."""
+        assert trends.realized_vol(series([100.0] * 20)) is None
+
+    def test_exactly_enough_is_enough(self):
+        assert trends.realized_vol(flat(21)) is not None
+
+    def test_a_wider_swing_reports_more_volatility(self):
+        calm = series([100 + (1 if i % 2 else -1) for i in range(21)])
+        wild = series([100 + (10 if i % 2 else -10) for i in range(21)])
+        assert trends.realized_vol(wild) > trends.realized_vol(calm)
+
+    def test_it_is_never_negative(self):
+        """A magnitude, not a direction - unlike a drawdown or vs-average,
+        there is no side of zero for it to fall on."""
+        s = series([100 + (3 if i % 2 else -3) for i in range(21)])
+        assert trends.realized_vol(s) >= 0
+
+    def test_reported_on_the_annualised_scale_daily_swings_would_understate(self):
+        """A ~1% daily wobble compounds into a much larger annual figure;
+        reporting the raw daily figure would read as a calm stock."""
+        calm = series([100 + (1 if i % 2 else -1) for i in range(21)])
+        assert trends.realized_vol(calm) > 5
+
+    def test_a_zero_close_is_absent_not_a_shortened_window(self):
+        """A zero close is corrupt data, not a real price. Silently
+        dropping the one return it breaks and reporting the rest under the
+        full 20-session label would be a 19-session figure wearing it."""
+        values = [100.0] * 10 + [0.0] + [100.0] * 10
+        assert trends.realized_vol(series(values)) is None
+
+    def test_a_zero_close_at_the_very_end_is_still_absent(self):
+        """The last close is never a denominator, but a zero there is still
+        not a real price."""
+        values = [100.0] * 20 + [0.0]
+        assert trends.realized_vol(series(values)) is None
+
+
 class TestDescribe:
     def test_reports_what_the_series_supports(self):
         m = trends.describe(series([100 + i * 0.1 for i in range(250)]))

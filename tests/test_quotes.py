@@ -75,6 +75,76 @@ class TestValuationLayerApplies:
         assert out.current_price == pytest.approx(4208.0)
 
 
+class TestVolumeCapture:
+    """Volume rides in on the same download as price, for the same settled
+    session - it needs no Quote, since a share count carries no currency."""
+
+    @pytest.fixture
+    def pm(self, monkeypatch):
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0],
+                              "Volume": [1_000_000.0, 1_200_000.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Quote:
+            fast_info = {"currency": "GBp"}
+            info = {"shortName": "British American Tobacco"}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
+        return pm
+
+    def test_the_settled_sessions_volume_is_captured(self, pm):
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.volume == pytest.approx(1_200_000.0)
+
+    def test_no_volume_column_leaves_it_unset_not_zero(self, monkeypatch):
+        """The download this test doubles for has no Volume column at all -
+        the ordinary shape whenever the provider does not return one."""
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Quote:
+            fast_info = {"currency": "GBp"}
+            info = {"shortName": "British American Tobacco"}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.volume is None
+
+    def test_a_nan_volume_is_not_a_number_either(self, monkeypatch):
+        """A missing volume can arrive as NaN rather than an absent column -
+        float(nan) does not raise, so this is not caught by the except
+        clause. Left as NaN it survives every `is not None` check downstream
+        and crashes on round(nan) inside volume._write()."""
+        import math
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0],
+                              "Volume": [1_000_000.0, float("nan")]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Quote:
+            fast_info = {"currency": "GBp"}
+            info = {"shortName": "British American Tobacco"}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.volume is None
+        assert not (isinstance(out.volume, float) and math.isnan(out.volume))
+
+
 class TestUnconfirmedUnit:
     """A failed unit lookup looks exactly like a major-unit quote. Assuming
     the latter values a pence quote as pounds, so the position is left
@@ -101,6 +171,49 @@ class TestUnconfirmedUnit:
         pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
         [out] = pm.fetch_prices([pos])
         assert out.current_price is None
+
+    def test_volume_is_captured_even_when_the_unit_cannot_be(self, monkeypatch):
+        """Volume carries no currency, so it needs no Quote - an unresolved
+        unit must not also withhold volume, which does not depend on it."""
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0],
+                              "Volume": [1_000_000.0, 1_200_000.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Blind:
+            fast_info = {}
+            info = {}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Blind())
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.current_price is None            # unit still unresolved
+        assert out.volume == pytest.approx(1_200_000.0)
+
+    def test_volume_date_is_independent_of_price_date(self, monkeypatch):
+        """snapshot.py builds volume's own date map from volume_date, not
+        price_date - reusing price_date would silently drop a volume whose
+        quote unit never resolved, since price_date stays None for it."""
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0],
+                              "Volume": [1_000_000.0, 1_200_000.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Blind:
+            fast_info = {}
+            info = {}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Blind())
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
+        [out] = pm.fetch_prices([pos])
+        assert out.price_date is None
+        assert out.volume_date == "2026-09-17"
 
     def test_a_recorded_unit_survives_a_failed_lookup(self, pm):
         """This is the point of storing it: resolution already established the

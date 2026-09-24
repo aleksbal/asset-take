@@ -12,7 +12,7 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -48,6 +48,14 @@ class Position:
     previous_close: Optional[float] = None
     price_date: Optional[str] = None
     name: Optional[str] = None
+    # The settled session's traded volume, and the session it belongs to.
+    # A separate field from price_date rather than reusing it: volume
+    # capture does not depend on the quote's currency resolving, so it can
+    # be set while price_date stays None for a position whose unit is
+    # unknown - reusing price_date would silently drop that volume when
+    # it comes time to record it.
+    volume: Optional[float] = None
+    volume_date: Optional[str] = None
 
 
 @dataclass
@@ -325,8 +333,9 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                 # position a hundredfold. The unit is recorded at resolution
                 # so this does not depend on a lookup that can fail.
                 unit = pos.quote_currency or _quote_currency(pos.ticker)
+                session = closes.index[-1].date()
                 quote = Quote.from_provider(pos.current_price, unit,
-                                            session=closes.index[-1].date())
+                                            session=session)
                 if quote is None:
                     # An unconfirmed unit is indistinguishable from a major
                     # one, so the position is left unpriced. The dashboard
@@ -344,6 +353,25 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                     # point-in-time valuation and wants it.
                     pos.price_date = (quote.session.isoformat()
                                       if quote.settled else None)
+
+                # Volume carries no currency, so it needs no Quote - and
+                # must not be gated behind one resolving. A legacy position
+                # with no quote_currency and a failed lookup leaves price
+                # unresolved (quote is None above), but that says nothing
+                # about whether the session settled, which volume alone
+                # depends on.
+                settled = session < date.today()
+                if settled and 'Volume' in ticker_data:
+                    pos.volume_date = session.isoformat()
+                    try:
+                        vol = float(ticker_data['Volume'].loc[closes.index[-1]])
+                        # A missing volume arrives as NaN, not an exception -
+                        # float(nan) succeeds. Left as NaN it would reach
+                        # volume._write()'s round() and crash the run after
+                        # the snapshot was already written.
+                        pos.volume = None if vol != vol else vol
+                    except (KeyError, ValueError, TypeError):
+                        pos.volume = None
 
             # Get company name
             try:

@@ -15,6 +15,8 @@ from datetime import date
 
 RSI_PERIOD = 14
 DRAWDOWN_MONTHS = 6
+VOL_WINDOW = 20
+TRADING_DAYS = 252
 
 
 def _window(closes, days):
@@ -116,6 +118,37 @@ def relative_to_average(closes, days, last=None):
         return None
     current = closes[-1][1] if last is None else last
     return (current / average - 1) * 100
+
+
+def realized_vol(closes, days=VOL_WINDOW):
+    """Annualised size of day-to-day moves over the last `days` sessions.
+
+    Settled closes only, like `moving_average` - a live quote is one
+    incomplete session and would inflate or dampen a figure meant to
+    describe what already happened. `days` returns need `days + 1` closes,
+    the same off-by-one `rsi` has for the same reason: a return is the gap
+    between two closes, not a property of one.
+
+    Annualised by the conventional 252 trading days, so a window of any
+    length reads on the same scale - a fact this codebase does not act on
+    any more than a drawdown or an RSI does.
+    """
+    window = _window(closes, days + 1)
+    if not window:
+        return None
+    values = [close for _, close in window]
+    # A zero close is not a real price - it is corrupt or missing data that
+    # slipped past storage. Dropping just the one return it breaks and
+    # reporting the rest under the full window's label would be a
+    # shortened window wearing its name.
+    if any(v == 0 for v in values):
+        return None
+    returns = [values[i] / values[i - 1] - 1 for i in range(1, len(values))]
+    if len(returns) < 2:
+        return None
+    mean = sum(returns) / len(returns)
+    variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+    return (variance ** 0.5) * (TRADING_DAYS ** 0.5) * 100
 
 
 def rsi(closes, period=RSI_PERIOD):
