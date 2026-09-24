@@ -1,14 +1,7 @@
-"""The report as a page you can look at.
+"""Renders report.json as an HTML page.
 
-The only place that knows what HTML is. It takes report.json and nothing
-else: no fetching, no arithmetic beyond laying figures out, and no knowledge
-of which parameters exist.
-
-Columns come from the report's own `indicators` block, so a parameter added
-to the registry appears here without this file being touched. What a
-renderer decides is presentation only - decimal places, an em dash for an
-absent value, which direction is green - and it reads that from each
-parameter's `unit`, never from its name.
+Columns come from the report's `indicators` block; formatting is chosen by
+each parameter's `unit`.
 """
 import math
 
@@ -28,30 +21,21 @@ def num(x, dp=0):
 
 
 def cell(value, unit):
-    """One parameter, formatted by what kind of number it is.
-
-    An absent value is an em dash and never a zero: no data and no movement
-    are different claims, and a zero is indistinguishable from a real one.
-    """
+    """A table cell for one parameter value, formatted by `unit`; an em dash
+    for None."""
     if value is None:
         return DASH
-    # A value that rounds to 0.0 has no sign worth printing: "-0.0%" and
-    # "+0.0%" both claim a direction the displayed magnitude doesn't show.
+    # Rounds to zero: print without a sign.
     if unit in ("percent", "fall", "volume") and round(value, 1) == 0:
         return '<td class="n">0.0%</td>'
     if unit == "percent":
         return f'<td class="n {"up" if value >= 0 else "dn"}">{value:+.1f}%</td>'
-    # A fall is never positive, so its sign says nothing and coloring by it
-    # would mark every row. Marked only where the drop is large enough to be
-    # a claim: colour is one, and a 2% wobble is not.
+    # Coloured only below -5%.
     if unit == "fall":
         return f'<td class="n {"dn" if value < -5 else ""}">{value:+.1f}%</td>'
     if unit == "days":
         return f'<td class="n none">{value:.0f}d</td>'
-    # Volatility is a magnitude, never negative, so a sign would claim a
-    # direction it does not have. Volume against its own average is signed,
-    # but neither direction is a gain or a loss the way percent's is - both
-    # stay uncoloured for the same reason RSI does.
+    # Volatility and volume are not coloured.
     if unit == "vol":
         return f'<td class="n none">{value:.1f}%</td>'
     if unit == "volume":
@@ -60,7 +44,7 @@ def cell(value, unit):
 
 
 def line_chart(series, w=760, h=220, pad=(16, 56, 28, 8)):
-    """Portfolio value over time. One series, so no legend - the title names it."""
+    """SVG line chart of portfolio value over time."""
     pts = [(s["date"], s["value"]) for s in series]
     if len(pts) < 2:
         return ('<div class="sparse">One day recorded so far. '
@@ -99,7 +83,7 @@ def line_chart(series, w=760, h=220, pad=(16, 56, 28, 8)):
 
 
 def donut(rows, size=220, thick=26):
-    """Top 7 by weight; the remainder folds into Other. Hues are never cycled."""
+    """SVG donut of the seven largest weights, with the rest as Other."""
     rows = [r for r in rows if (r.get("position") or {}).get("weight") is not None]
     shown = rows[:7]
     rest = sum(r["position"]["weight"] for r in rows[7:])
@@ -130,26 +114,15 @@ def donut(rows, size=220, thick=26):
 
 
 def _row(r, units):
-    """One instrument. Parameters in whatever order the report declares them.
-
-    The ownership columns - quantity, value, weight, day, P&L - come from the
-    row's `position`, which a row need not have. An instrument nobody owns
-    renders every one of them as an em dash rather than a zero, and its
-    parameters render exactly as a held one's do. That is the shape a
-    market-wide view emits, so the renderer must not assume the block is
-    there.
-    """
+    """One table row. Ownership columns come from the row's `position`
+    block and show an em dash where it is absent."""
     held = r.get("position") or {}
     name = (f'<td class="nm" title="{r["name"]}">{r["name"]}'
             f'<span class="tk">{r["ticker"]}</span></td>')
     qty = (f'<td class="n">{held["quantity"]:g}</td>' if "quantity" in held
            else DASH)
     if not r.get("priced"):
-        # Only the price-derived ownership columns are unavailable here -
-        # value, weight, day and P&L all need today's price or FX rate.
-        # The trend parameters come from the stored series, independent of
-        # today's fetch, so volume_trend in particular can still be there
-        # for a row with no price at all; spanning past them would hide it.
+        # Price-derived columns are replaced; parameters are still shown.
         return (f'<tr class="unpriced">{name}{qty}'
                 f'<td class="n" colspan="5">no price available</td>'
                 + "".join(cell(r["values"].get(k), u) for k, u in units)
@@ -171,12 +144,8 @@ def _row(r, units):
 
 
 def table(rows, declared=None):
-    """Headers from the report's own declaration, never from a name here.
-
-    Defaults to the registry so a caller holding only rows still renders
-    every parameter; a report carries its own list, which is what lets a
-    file written by an older run be drawn with the columns it actually has.
-    """
+    """The parameter table, with columns in the order of `indicators`
+    (default: the registry)."""
     declared = ix.declared() if declared is None else declared
     units = [(d["key"], d["unit"]) for d in declared]
     heads = "".join(
@@ -191,15 +160,8 @@ def table(rows, declared=None):
 
 
 def notes(report):
-    """Everything the figures do not say for themselves.
-
-    Built as a list rather than a chain of conditional concatenations. The
-    chain read `A + B + C if no_cost else ""`, which Python groups as
-    `(A + B + C) if no_cost else ""` - so a portfolio where every position
-    stated a cost basis suppressed the others, including the one saying
-    positions could not be priced and the total is understated. Exactly the
-    warning that must never be the one to go missing.
-    """
+    """The caveat lines under the totals: unpriced positions, missing rates
+    and cost bases, excluded snapshots."""
     left = report["excluded"]
 
     def plural(items, s="s", one=""):
@@ -250,10 +212,6 @@ def render(report):
         day_pct=f'{t["day_pct"]:+.2f}',
         day_cls="up" if t["day"] >= 0 else "dn",
         pnl=f'{pnl:+,.0f}'.replace(",", " ") if pnl is not None else "&mdash;",
-        # Three different states, and the wrong one was the default. No
-        # position converted is not the same as no position stating a basis:
-        # the second is a fact about the holdings, the first about our rates,
-        # and saying the second contradicts the note directly below.
         pnl_sub=((f'{pnl_pct:+.1f}% on cost'
                   + (f' · excludes {len(no_rate)}' if no_rate else ''))
                  if pnl_pct is not None

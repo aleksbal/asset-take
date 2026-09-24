@@ -1,14 +1,7 @@
-"""Descriptive statistics over a position's price series.
+"""Descriptive statistics over a listing's daily closes.
 
-These are facts, not signals. Each one says what already happened - how far
-below a recent peak a price sits, which side of its moving average it is on -
-and none of them says what to do about it. Evidence that acting on them beats
-holding is contested, and by price alone a stock that has stopped growing is
-indistinguishable from one that is merely resting.
-
-Nothing here is computed from too little data. A 200-day average of 30 days of
-prices is not a rough 200-day average, it is a different number wearing the
-name, and a reader cannot tell the difference from the output.
+Each function returns None when the series is too short for its window;
+a window is never shortened to fit.
 """
 import calendar
 from datetime import date
@@ -20,27 +13,15 @@ TRADING_DAYS = 252
 
 
 def _window(closes, days):
-    """The last `days` sessions, or None if the series does not hold them.
-
-    Exactly `days`, with no tolerance. Non-trading days are already absent
-    from a price series, so a venue's holidays are no argument for reducing a
-    session count - and averaging 170 closes under a 200-session label gives
-    a materially different number that the output cannot be distinguished
-    from the real one.
-    """
+    """The last `days` closes, or None if there are fewer."""
     if len(closes) < days:
         return None
     return closes[-days:]
 
 
 def _since(closes, months, end=None):
-    """The closes within the last `months`, or None if the series is shorter.
-
-    A calendar window, because "its six-month high" is a claim about time
-    rather than about sessions. It is only reported when the series actually
-    reaches back that far; otherwise it would be the high of whatever we
-    happen to hold, under a label saying six months.
-    """
+    """The closes from `months` calendar months before `end` (default: the
+    last close) onwards, or None if the series does not reach back that far."""
     if not closes:
         return None
     last = _as_date(end or closes[-1][0])
@@ -51,15 +32,8 @@ def _since(closes, months, end=None):
 
 
 def _minus_months(day, months):
-    """`day` less whole calendar months.
-
-    Not an averaged day count: months differ in length, so six of them from
-    18 September is 18 March, while 183 days is the 19th. A peak on the
-    boundary would fall outside a window labelled six months.
-
-    A day that does not exist in the earlier month clamps to its last - the
-    31st of August less six months is the 28th or 29th of February.
-    """
+    """`day` minus whole calendar months, clamped to the end of a shorter
+    month (31 August minus six months is the last day of February)."""
     year, month = day.year, day.month - months
     while month <= 0:
         month += 12
@@ -68,22 +42,17 @@ def _minus_months(day, months):
 
 
 def drawdown(closes, months=DRAWDOWN_MONTHS, last=None, on=None):
-    """How far below its peak the last price sits, and when that peak was.
+    """How far `last` sits below the highest close of the last `months`.
 
-    The plateau case this exists for: a price that stopped rising some time
-    ago and has been drifting since. A table of current values cannot show
-    that, because nothing in today's number remembers the peak.
+    `last` defaults to the last stored close and `on` to its date. Returns
+    {peak, peak_on, pct, days_since_peak}, or None if the series is shorter
+    than `months`. `last` itself counts as a candidate peak.
     """
     window = _since(closes, months, end=on)
     if not window:
         return None
     stored_day, stored = window[-1]
-    # The age is measured to the price being reported. A live Monday quote
-    # against a Friday peak is three days on, not the nought that measuring
-    # to the last stored close would give.
     last_day = on or stored_day
-    # A live price can itself be the high. Comparing today against a peak it
-    # has already passed would report a fall that has not happened.
     last = stored if last is None else last
     peak = max(max(close for _, close in window), last)
     if peak <= 0:
@@ -98,7 +67,7 @@ def drawdown(closes, months=DRAWDOWN_MONTHS, last=None, on=None):
 
 
 def moving_average(closes, days):
-    """The mean of the last `days` closes, or None if unsupported."""
+    """The mean of the last `days` closes, or None if there are fewer."""
     window = _window(closes, days)
     if not window:
         return None
@@ -106,12 +75,10 @@ def moving_average(closes, days):
 
 
 def relative_to_average(closes, days, last=None):
-    """Percent above or below the moving average, or None.
+    """Percent `last` sits above (+) or below (-) the `days`-close average.
 
-    `last` is compared *against* the average rather than counted in it. A
-    live quote is not a close, and folding it into the window would let 199
-    settled closes plus an intraday value be reported as a 200-session
-    average - or, on a longer series, push a settled close out to make room.
+    `last` defaults to the last close. It is compared with the average, not
+    included in it. None if the average cannot be computed.
     """
     average = moving_average(closes, days)
     if not average:
@@ -121,26 +88,17 @@ def relative_to_average(closes, days, last=None):
 
 
 def realized_vol(closes, days=VOL_WINDOW):
-    """Annualised size of day-to-day moves over the last `days` sessions.
+    """Annualised volatility of daily returns over the last `days` sessions,
+    in percent.
 
-    Settled closes only, like `moving_average` - a live quote is one
-    incomplete session and would inflate or dampen a figure meant to
-    describe what already happened. `days` returns need `days + 1` closes,
-    the same off-by-one `rsi` has for the same reason: a return is the gap
-    between two closes, not a property of one.
-
-    Annualised by the conventional 252 trading days, so a window of any
-    length reads on the same scale - a fact this codebase does not act on
-    any more than a drawdown or an RSI does.
+    Sample standard deviation of the `days` daily returns, times sqrt(252).
+    Needs `days + 1` settled closes. None if there are fewer, or if any close
+    in the window is zero.
     """
     window = _window(closes, days + 1)
     if not window:
         return None
     values = [close for _, close in window]
-    # A zero close is not a real price - it is corrupt or missing data that
-    # slipped past storage. Dropping just the one return it breaks and
-    # reporting the rest under the full window's label would be a
-    # shortened window wearing its name.
     if any(v == 0 for v in values):
         return None
     returns = [values[i] / values[i - 1] - 1 for i in range(1, len(values))]
@@ -152,10 +110,10 @@ def realized_vol(closes, days=VOL_WINDOW):
 
 
 def rsi(closes, period=RSI_PERIOD):
-    """Wilder's relative strength index over `period` sessions, or None.
+    """Wilder's relative strength index over `period` sessions.
 
-    Needs period+1 closes for period changes. A flat series has no losses to
-    divide by, which is 100 by convention rather than by arithmetic.
+    Needs `period + 1` closes; None if there are fewer. 100 when there were
+    only gains, 50 when there was no change at all.
     """
     if len(closes) < period + 1:
         return None
@@ -176,13 +134,11 @@ def rsi(closes, period=RSI_PERIOD):
 
 
 def describe(closes, live=None, live_on=None):
-    """Every metric the series supports, with None for those it does not.
+    """Every metric for a series of (date, close), None where unsupported.
 
-    `live` is the current session's price, which is not a close. It is what
-    each metric is measured against, but it never enters a window that counts
-    sessions - except RSI, which measures the latest change rather than an
-    average over a named number of closes, and is conventionally computed
-    against the current price.
+    `live` is today's unsettled price, dated `live_on`. Drawdown and the
+    moving-average comparisons measure it against the stored closes; RSI
+    includes it as the latest change.
     """
     if not closes:
         return {}

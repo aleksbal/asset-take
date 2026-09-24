@@ -1,10 +1,4 @@
-"""The generic CSV fallback.
-
-A second adapter exists mainly to test a claim the architecture makes: that a
-broker is one new file and nothing else changes. It was not true. `Holding`
-had been written against a single export and assumed a broker-supplied
-valuation, which only a specific adapter can provide.
-"""
+"""Tests for the generic CSV adapter."""
 import pytest
 
 from holdings import adapters
@@ -48,7 +42,6 @@ def test_declines_a_csv_without_holdings(tmp_path):
 
 
 def test_states_no_valuation(tmp_path):
-    """The distinguishing property: nothing to verify a ticker against."""
     p = write(tmp_path, "ticker,quantity\nIWDA.AS,30\n")
     assert generic.parse(p)[0].broker_price is None
 
@@ -69,11 +62,10 @@ def test_tags_its_source(tmp_path):
 
 
 class TestPrecedence:
-    """A generic reader recognises files a specific adapter parses better."""
+    """The generic adapter is tried after specific ones."""
 
     @pytest.fixture
     def contested(self, tmp_path):
-        """A header both adapters claim: ING's signature, generic's aliases."""
         p = tmp_path / "contested.csv"
         header = ("ISIN;Wertpapiername;Stück/Nominale;Einheitskennzeichen;"
                   "Einstandskurs;Währung;Einstandswert;Währung;Bewertungskurs;"
@@ -98,27 +90,19 @@ class TestPrecedence:
 
 
 class TestNumberLocale:
-    """`1,234` is 1234 in English and 1.234 in German, and the file delimiter
-    cannot settle it - CSV quoting permits a comma inside a field. The locale
-    is inferred from all of the file's numbers together, and applied uniformly.
-    """
+    """Decimal separator inferred per file."""
 
     def test_english_grouping_inferred_from_a_corroborating_value(self, tmp_path):
-        """`1,234.56` can only be English, which settles `1,234` too."""
         p = write(tmp_path, 'ticker,quantity,avg_cost\nAAPL,"1,234","1,234.56"\n')
         h = generic.parse(p)[0]
         assert h.quantity == 1234
         assert h.avg_cost == pytest.approx(1234.56)
 
     def test_quoted_german_decimal_in_a_comma_delimited_file(self, tmp_path):
-        """The inverse corruption: a comma-delimited file may quote `12,34`."""
         p = write(tmp_path, 'ticker,quantity\nSAP.DE,"12,34"\n')
         assert generic.parse(p)[0].quantity == pytest.approx(12.34)
 
     def test_a_lone_ambiguous_value_is_not_guessed_at(self, tmp_path):
-        """`1,234` alone carries no evidence. The heuristic reads it as a
-        decimal; inventing a locale from the delimiter would corrupt the
-        German case instead. Documented, not asserted as correct."""
         p = write(tmp_path, 'ticker,quantity\nAAPL,"1,234"\n')
         assert generic.parse(p)[0].quantity == pytest.approx(1.234)
 
@@ -128,7 +112,6 @@ class TestNumberLocale:
             pytest.approx(12.34), pytest.approx(1.234)]
 
     def test_decimal_comma_still_works_in_a_semicolon_file(self, tmp_path):
-        """German exports use semicolons precisely so the comma stays free."""
         p = write(tmp_path, "ticker;quantity;avg_cost\nSAP.DE;18;245,8172\n")
         h = generic.parse(p)[0]
         assert h.quantity == 18
@@ -144,8 +127,7 @@ class TestNumberLocale:
 
 
 class TestExplicitTicker:
-    """A file naming an exchange listing means that listing, not whatever a
-    search for the ISIN returns first."""
+    """A ticker column is used as given."""
 
     def test_ticker_is_kept_alongside_the_isin(self, tmp_path):
         p = write(tmp_path, "isin,ticker,quantity\nIE00B4L5Y983,EUNL.DE,100\n")
@@ -161,8 +143,7 @@ class TestExplicitTicker:
 
 
 class TestFileDiscovery:
-    """Default discovery must match what adapters accept, or a supported
-    export in the imports directory is reported as absent."""
+    """Which files in imports/ are picked up."""
 
     @pytest.mark.parametrize("suffix", [".csv", ".tsv", ".txt"])
     def test_accepted_suffixes_are_discoverable(self, tmp_path, suffix):
@@ -178,10 +159,7 @@ class TestFileDiscovery:
 
 
 class TestRowsWithoutAnIdentifier:
-    """A quantity alone does not make a holding. Exports commonly end in a
-    subtotal line carrying a summed quantity and no instrument; admitting it
-    creates a holding keyed on the empty string, and several such rows
-    overwrite one another downstream."""
+    """Rows with a quantity but no ISIN or ticker are skipped."""
 
     def test_footer_row_is_skipped(self, tmp_path):
         p = write(tmp_path, "isin,ticker,name,quantity\n"
@@ -196,9 +174,7 @@ class TestRowsWithoutAnIdentifier:
 
 
 class TestHeaderSpacing:
-    """A human-written header spells a column with spaces. If the alias only
-    lists the underscored form the import still succeeds, silently dropping
-    the column - which for `avg_cost` means losing P&L for every row."""
+    """Headers written with spaces or hyphens."""
 
     @pytest.mark.parametrize("header", ["Average Cost", "average_cost",
                                         "Average-Cost", "AVERAGE  COST"])

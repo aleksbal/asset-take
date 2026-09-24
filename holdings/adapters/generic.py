@@ -1,11 +1,8 @@
 """A plain CSV of holdings, for brokers without a dedicated adapter.
 
-Accepts the columns most exports share, under common English and German names.
-Unlike a broker-specific adapter it supplies no `broker_price`, so ticker
-resolution cannot be verified against the broker's own valuation.
-
-This is a fallback: it is consulted only after every specific adapter has
-declined, since it would otherwise claim files they parse better.
+Accepts common English and German column names. Supplies no `broker_price`,
+so resolved tickers cannot be verified against a broker valuation. Tried
+only after every specific adapter has declined.
 """
 import csv
 import re
@@ -31,9 +28,8 @@ _SPACE = re.compile(r"[\s_-]+")
 
 
 def _norm(name):
-    """Fold a header to alias form. Exports write the same column as
-    `Average Cost`, `average_cost` or `Average-Cost`; leaving the spaces in
-    means the alias misses and the cost is silently read as absent."""
+    """A header in alias form: lowercased, BOM stripped, and each run of
+    spaces, `_` or `-` collapsed to one `_` (`Average Cost` -> `average_cost`)."""
     return _SPACE.sub("_", (name or "").strip().lstrip("﻿").lower()).strip("_")
 
 
@@ -79,14 +75,8 @@ def detect(path):
 
 
 def _infer_decimal_sep(values):
-    """Decide the file's numeric locale from all of its numbers at once.
-
-    The delimiter cannot settle this - CSV quoting allows a comma inside a
-    field, so a comma-delimited file may legitimately carry "12,34". A single
-    value often cannot settle it either: "1,234" is 1234 in English and 1.234
-    in German. Across a whole file there is usually evidence, and applying one
-    decision consistently beats guessing per value.
-    """
+    """The decimal separator for the whole file, inferred from all of its
+    numbers together, or None if they give no evidence either way."""
     votes = {".": 0, ",": 0}
     for v in values:
         v = (v or "").strip()

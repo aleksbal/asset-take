@@ -1,9 +1,4 @@
-"""Money that knows its currency, and conversions that keep their working.
-
-A converted amount used to be a bare float. That is how a rate of 1.0 came to
-be defaulted in seven places: a number that has been converted is
-indistinguishable from one that has not, and both render.
-"""
+"""Tests for market/money.py."""
 import pytest
 
 from market import fx
@@ -12,7 +7,6 @@ from market.money import Converted, Money, total
 
 @pytest.fixture
 def rates(monkeypatch):
-    """Stub the rate service. None where a pair cannot be priced."""
     table = {("USD", "EUR"): 0.87, ("GBP", "EUR"): 1.15, ("EUR", "EUR"): 1.0}
 
     def fake(currency, base, on=None):
@@ -50,8 +44,6 @@ class TestExchange:
         assert c.base == "EUR"
 
     def test_an_unavailable_rate_gives_nothing(self, rates):
-        """None, never the unconverted amount and never a rate of 1.0. A
-        holding valued at a made-up rate looks exactly like a correct one."""
         assert fx.exchange(Money(100.0, "XXX"), "EUR") is None
 
     def test_the_same_currency_still_produces_a_conversion(self, rates):
@@ -67,7 +59,6 @@ class TestExchange:
         assert fx.exchange(Money(100.0, "USD"), "EUR", on=on).on == on
 
     def test_a_spot_conversion_records_no_date(self, rates):
-        """Absent and 'today' are different claims about which rate was used."""
         assert fx.exchange(Money(100.0, "USD"), "EUR").on is None
 
 
@@ -92,8 +83,6 @@ class TestTotal:
         assert total(items, "EUR").amount == pytest.approx(87.0)
 
     def test_nothing_to_total_is_none_not_zero(self):
-        """sum([]) is 0, and a portfolio with no cost basis reported +0 of
-        unrealised P&L - an unknown dressed as a certainty."""
         assert total([], "EUR") is None
 
     def test_all_unconvertible_is_none_not_zero(self):

@@ -1,13 +1,4 @@
-"""ISIN → ticker resolution.
-
-The provider returns a security's primary listing, which for a German broker's
-EUR cost basis is frequently the wrong currency, and an ISIN search can return
-a similarly-named but different instrument. Neither failure is visible in the
-output, so resolution is verified against the broker's own price rather than
-trusted.
-
-Network calls are stubbed: these test the decision, not the provider.
-"""
+"""Tests for ISIN to ticker resolution in holdings/resolve.py."""
 import pytest
 
 from holdings import resolve as rz
@@ -24,13 +15,6 @@ def holding(**kw):
 
 @pytest.fixture
 def market(monkeypatch):
-    """Let a test declare the candidate universe, its prices and its depths.
-
-    `depths` is how many days of history each listing carries. It defaults to
-    equal depth, so a test that does not care about history is decided purely
-    on price, as it was before depth entered the tiebreak. Stubbing it also
-    keeps the suite off the network.
-    """
     prices, depths, units = {}, {}, {}
     rates = {"EUR": 1.0, "USD": 0.87, "GBP": 1.15, "GBp": 0.0115}
 
@@ -61,7 +45,6 @@ def test_picks_the_listing_matching_the_broker_price(market):
 
 
 def test_flags_a_near_namesake_when_it_is_the_only_candidate(market):
-    """The real failure: a small-cap ETF matched to its large-cap namesake."""
     market(["IUSN.DE"], {"IUSN.DE": (6.60, "EUR")})
     row = rz.resolve(holding())
     assert row["status"] == "check"
@@ -69,9 +52,6 @@ def test_flags_a_near_namesake_when_it_is_the_only_candidate(market):
 
 
 def test_takes_a_foreign_listing_that_verifies_once_converted(market):
-    """A listing in another currency is not a different instrument. Several
-    holdings had no candidate at all in the broker's currency, and discarding
-    the foreign one outright is what made hand-pinning necessary."""
     market(["NVDA"], {"NVDA": (219.13, "USD")})
     row = rz.resolve(holding(isin="US67066G1040", name="NVIDIA CORP.",
                              broker_price=190.64))
@@ -81,8 +61,6 @@ def test_takes_a_foreign_listing_that_verifies_once_converted(market):
 
 
 def test_still_rejects_a_foreign_listing_that_does_not_verify(market):
-    """Conversion widens the search; it does not weaken the check. The
-    small-cap namesake stays rejected however its currency is read."""
     market(["IUSN.DE"], {"IUSN.DE": (6.60, "EUR")})
     row = rz.resolve(holding())
     assert row["status"] == "check"
@@ -90,24 +68,11 @@ def test_still_rejects_a_foreign_listing_that_does_not_verify(market):
 
 
 def test_a_listing_whose_rate_is_unavailable_is_skipped(market):
-    """No rate means no comparison. Pricing it at a rate of one would put a
-    plausible number on an unverified instrument."""
     market(["XXX.QQ"], {"XXX.QQ": (127.40, "XXX")}, fx={"XXX": None})
     assert rz.resolve(holding())["status"] == "unresolved"
 
 
 def test_an_exact_foreign_listing_beats_a_near_domestic_one(market):
-    """Currency no longer ranks above anything.
-
-    It used to come first, which is how a one-day listing beat a 251-day one.
-    With equal history the price decides, and a listing that converts exactly
-    is the better match whatever it quotes in.
-
-    Note the USD price is the broker's figure *divided by the rate*: an
-    earlier version of this test used the broker's number as a dollar price,
-    so the candidate converted 13% out and was rejected at the tolerance gate.
-    The tiebreak it claimed to exercise was never reached.
-    """
     market(["NVDA", "NVD.DE"], {
         "NVDA": (219.13, "USD"),    # 190.64 EUR once converted - exact
         "NVD.DE": (191.00, "EUR"),  # slightly off
@@ -117,7 +82,6 @@ def test_an_exact_foreign_listing_beats_a_near_domestic_one(market):
 
 
 def test_the_currency_preference_restores_the_domestic_listing(market):
-    """Opting in puts the holding's own currency back above price proximity."""
     market(["NVDA", "NVD.DE"], {
         "NVDA": (219.13, "USD"),
         "NVD.DE": (191.00, "EUR"),
@@ -135,7 +99,6 @@ def test_unresolved_when_nothing_is_found(market):
 
 
 def test_manual_entries_survive_reresolution(market):
-    """A correction must not be undone by the next import."""
     market(["SOMETHING.ELSE"], {"SOMETHING.ELSE": (127.40, "EUR")})
     pinned = {"isin": "IE00B4L5Y983", "ticker": "EUNL.DE", "currency": "EUR",
               "yahoo_price": "", "broker_price": 127.42, "deviation_pct": "",
@@ -155,11 +118,7 @@ def test_tolerance_boundary_is_the_documented_one(market):
 
 
 class TestWithoutABrokerPrice:
-    """A source that states no valuation, e.g. the generic CSV adapter.
-
-    Before the second adapter existed, every such holding resolved to nothing:
-    verification was mandatory and there was nothing to verify against.
-    """
+    """Resolution for sources that state no broker price."""
 
     def test_takes_a_currency_match_and_marks_it_unverified(self, market):
         market(["EUNL.DE"], {"EUNL.DE": (127.40, "EUR")})
@@ -168,9 +127,6 @@ class TestWithoutABrokerPrice:
         assert row["status"] == "unverified"
 
     def test_prefers_the_holdings_currency_when_nothing_verifies_it(self, market):
-        """With no valuation to check against, currency is the only signal
-        left, so a listing already in the holding's currency is the safer
-        guess - but a foreign one still beats no mapping at all."""
         market(["IWDA.L", "EUNL.DE"],
                {"IWDA.L": (110.0, "GBP"), "EUNL.DE": (127.40, "EUR")})
         assert rz.resolve(holding(broker_price=None))["ticker"] == "EUNL.DE"
@@ -182,7 +138,6 @@ class TestWithoutABrokerPrice:
         assert row["status"] == "unverified"
 
     def test_uses_a_ticker_given_directly(self, market):
-        """The generic adapter may supply a ticker rather than an ISIN."""
         market([], {"IWDA.AS": (127.40, "EUR")})
         row = rz.resolve(holding(isin="IWDA.AS", broker_price=None))
         assert row["ticker"] == "IWDA.AS"
@@ -196,7 +151,6 @@ class TestWithoutABrokerPrice:
 
 class TestExplicitTicker:
     def test_a_supplied_ticker_is_used_before_searching(self, market):
-        """Searching the ISIN could return a different venue entirely."""
         market(["SOMETHING.ELSE"], {"SOMETHING.ELSE": (127.40, "EUR"),
                                     "EUNL.DE": (127.40, "EUR")})
         row = rz.resolve(holding(ticker="EUNL.DE", broker_price=None))
@@ -209,15 +163,9 @@ class TestExplicitTicker:
 
 
 class TestHistoryBreaksAPriceTie:
-    """Two listings of one security quote within a few hundredths of a percent
-    of each other, and picking the closer one is picking noise. A regional
-    venue priced five holdings correctly while carrying a single day of
-    history - correct to value, impossible to chart.
-    """
+    """History depth decides between equally close candidates."""
 
     def test_depth_wins_where_prices_are_indistinguishable(self, market):
-        """The thin listing is the *closer* of the two here. Taking the
-        closest price would pick it, which is what used to happen."""
         market(["DE000HAG0005.SG", "HAG.DE"],
                {"DE000HAG0005.SG": (77.25, "EUR"), "HAG.DE": (77.30, "EUR")},
                history={"DE000HAG0005.SG": 1, "HAG.DE": 505})
@@ -226,8 +174,6 @@ class TestHistoryBreaksAPriceTie:
         assert row["status"] == "ok"
 
     def test_depth_wins_across_the_whole_noise_band(self, market):
-        """Half a percent apart is still venue noise, not a different
-        security. The thin listing is again the closer one."""
         market(["THIN.SG", "DEEP.DE"],
                {"THIN.SG": (127.42, "EUR"), "DEEP.DE": (128.00, "EUR")},
                history={"THIN.SG": 1, "DEEP.DE": 505})
@@ -240,21 +186,12 @@ class TestHistoryBreaksAPriceTie:
         assert rz.resolve(holding(broker_price=648.50))["ticker"] == "EB2.F"
 
     def test_a_real_price_difference_is_not_overridden_by_depth(self, market):
-        """The band is narrow on purpose: a candidate percent away is a
-        different security, however much history it carries."""
         market(["RIGHT.DE", "WRONG.DE"],
                {"RIGHT.DE": (127.40, "EUR"), "WRONG.DE": (120.00, "EUR")},
                history={"RIGHT.DE": 1, "WRONG.DE": 505})
         assert rz.resolve(holding())["ticker"] == "RIGHT.DE"
 
     def test_depth_outranks_currency(self, market):
-        """The GE Aerospace case.
-
-        A euro listing carrying one day of history beat a dollar one carrying
-        251. It priced the position correctly and could not chart it, and the
-        only remedy was a hand-written pin - which is the thing resolution
-        exists to avoid.
-        """
         market(["DEEP.US", "SHALLOW.DE"],
                {"DEEP.US": (146.46, "USD"),     # 127.42 EUR once converted
                 "SHALLOW.DE": (127.40, "EUR")},
@@ -262,11 +199,6 @@ class TestHistoryBreaksAPriceTie:
         assert rz.resolve(holding())["ticker"] == "DEEP.US"
 
     def test_the_currency_preference_does_not_rescue_a_stub(self, market):
-        """Opting in reorders currency against price, never against history.
-
-        A listing that cannot carry a trend is not made usable by quoting in
-        the right currency.
-        """
         market(["DEEP.US", "SHALLOW.DE"],
                {"DEEP.US": (146.46, "USD"), "SHALLOW.DE": (127.40, "EUR")},
                history={"DEEP.US": 505, "SHALLOW.DE": 1})
@@ -283,17 +215,12 @@ class TestHistoryBreaksAPriceTie:
         assert rz.resolve(holding())["status"] == "check"
 
     def test_depth_is_a_threshold_not_a_score(self, market):
-        """Once a listing carries a year, more days are not better. Ranking on
-        raw count swaps a perfectly usable listing for another over a handful
-        of trading days that differ only by local holidays."""
         market(["FRA.F", "VIE.VI"],
                {"FRA.F": (127.41, "EUR"), "VIE.VI": (127.60, "EUR")},
                history={"FRA.F": 505, "VIE.VI": 509})
         assert rz.resolve(holding())["ticker"] == "FRA.F"
 
     def test_a_listing_short_a_few_holidays_still_counts_as_deep(self, market):
-        """The threshold sits below a full trading year so that a venue which
-        closed for a few local holidays is not treated as historyless."""
         market(["FRA.F", "VIE.VI"],
                {"FRA.F": (127.41, "EUR"), "VIE.VI": (127.60, "EUR")},
                history={"FRA.F": 251, "VIE.VI": 252})
@@ -301,10 +228,7 @@ class TestHistoryBreaksAPriceTie:
 
 
 class TestStability:
-    """Re-resolution must not churn. Candidates differ by hundredths of a
-    percent and live prices move, so picking afresh each time flips between
-    venues - and each flip starts the position's price history over under a
-    new symbol."""
+    """An existing mapping is kept while it still verifies."""
 
     def test_an_existing_mapping_that_still_verifies_is_kept(self, market):
         market(["RHM.HM", "RHM.DE"],
@@ -320,8 +244,6 @@ class TestStability:
         assert row["ticker"] == "RIGHT.DE"
 
     def test_a_thin_mapping_is_not_entrenched_by_stability(self, market):
-        """Keeping what we have must not preserve the very listings the depth
-        preference exists to replace."""
         market(["THIN.SG", "DEEP.DE"],
                {"THIN.SG": (127.42, "EUR"), "DEEP.DE": (127.40, "EUR")},
                history={"THIN.SG": 1, "DEEP.DE": 505})
@@ -329,8 +251,6 @@ class TestStability:
         assert row["ticker"] == "DEEP.DE"
 
     def test_stability_does_not_apply_without_a_valuation(self, market):
-        """Nothing to re-verify against, so the mapping cannot be trusted to
-        still hold."""
         market(["EUNL.DE"], {"EUNL.DE": (127.40, "EUR"), "OLD.DE": (127.40, "EUR")},
                history={"EUNL.DE": 505, "OLD.DE": 505})
         row = rz.resolve(holding(broker_price=None),
@@ -339,7 +259,7 @@ class TestStability:
 
 
 class TestPinnedRows:
-    """A pin fixes the ticker, not the figures beside it."""
+    """Manual rows keep their ticker and get refreshed prices."""
 
     def test_a_pin_keeps_its_ticker(self, market):
         market(["OTHER.DE"], {"EUNL.DE": (127.40, "EUR"), "OTHER.DE": (127.42, "EUR")})
@@ -348,8 +268,6 @@ class TestPinnedRows:
         assert row["ticker"] == "EUNL.DE" and row["status"] == "manual"
 
     def test_a_pin_does_not_preserve_the_figures_it_replaced(self, market):
-        """The row was pinned because the automatic match was 92.9% off. Those
-        numbers describe the rejected match, not the pinned one."""
         market([], {"EUNL.DE": (127.40, "EUR")})
         row = rz.resolve(holding(), existing={"ticker": "EUNL.DE", "status": "manual",
                                               "yahoo_price": 9.047, "deviation_pct": 92.9})
@@ -364,13 +282,7 @@ class TestPinnedRows:
 
 
 class TestMinorUnitQuotes:
-    """London quotes pence. The resolved row is written to positions.csv and
-    valued downstream, so normalising at the comparison alone would not have
-    helped: verification passed while the stored row stayed 100x out.
-
-    The conversion itself is covered in test_quotes; these cover the path
-    through resolution.
-    """
+    """Listings quoted in pence."""
 
     def test_the_live_price_is_normalised_before_anything_sees_it(self,
                                                                  monkeypatch):
@@ -381,7 +293,6 @@ class TestMinorUnitQuotes:
         assert rz._price("BATS.L") == (42.08, "GBP")
 
     def test_a_pence_listing_is_stored_in_the_major_unit(self, monkeypatch):
-        """End to end: what lands in the row, not just what was compared."""
         class Quote:
             fast_info = {"last_price": 4876.0, "currency": "GBp"}
 
@@ -396,9 +307,7 @@ class TestMinorUnitQuotes:
 
 
 class TestQuoteUnitIsRecorded:
-    """The valuation layer must not have to ask what unit a venue quotes in.
-    Asking there is a lookup that can fail, and a failure is indistinguishable
-    from a major-unit quote - which values pence as pounds."""
+    """The quote unit is written to the map."""
 
     def test_the_row_carries_the_venues_own_unit(self, market):
         market(["BATS.L"], {"BATS.L": (48.76, "GBP")}, history={"BATS.L": 505},
@@ -412,9 +321,6 @@ class TestQuoteUnitIsRecorded:
         assert rz.resolve(holding())["quote_currency"] == "EUR"
 
     def test_a_pin_refreshes_the_unit_for_its_new_ticker(self, market):
-        """The documented correction flow changes a row's ticker by hand. If
-        the unit is carried over from the listing being replaced, a pence
-        listing is marked as quoted in euros and valued a hundredfold high."""
         market([], {"BATS.L": (48.76, "GBP")}, quoted_in={"BATS.L": "GBp"})
         row = rz.resolve(holding(currency="GBP", broker_price=48.76),
                          existing={"ticker": "BATS.L", "status": "manual",
@@ -424,13 +330,7 @@ class TestQuoteUnitIsRecorded:
 
 
 class TestDisplayNameSurvivesReresolution:
-    """A display name belongs to the instrument, not to the listing.
-
-    `_row()` carries none, so every rebuilt row lost it and the next
-    `fill_display_names` took whatever the provider says about the new venue.
-    GE Aerospace became "General Electric Company" that way - Yahoo's label
-    for the German listing predates the Vernova spin-off.
-    """
+    """Display names carried across a change of ticker."""
 
     def pinned(self, **kw):
         base = {"isin": "US3696043013", "ticker": "GCP.DE", "currency": "EUR",
@@ -446,7 +346,6 @@ class TestDisplayNameSurvivesReresolution:
         assert row["display_name"] == "GE Aerospace"
 
     def test_a_name_survives_the_ticker_changing(self, market):
-        """Same ISIN, different venue - still the same company."""
         market(["GE"], {"GE": (127.40, "EUR")}, history={"GE": 505})
         row = rz.resolve(holding(), self.pinned(ticker="THIN.SG",
                                                 yahoo_price=1.0))
@@ -459,7 +358,6 @@ class TestDisplayNameSurvivesReresolution:
         assert row["display_name"] == "GE Aerospace"
 
     def test_a_first_resolution_states_no_name(self, market):
-        """Nothing to carry; fill_display_names fetches one afterwards."""
         market(["GCP.DE"], {"GCP.DE": (127.40, "EUR")}, history={"GCP.DE": 505})
         assert not rz.resolve(holding()).get("display_name")
 

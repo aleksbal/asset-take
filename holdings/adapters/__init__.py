@@ -8,9 +8,7 @@ from . import generic, ing
 #: Broker-specific adapters, tried in order.
 SPECIFIC = [ing]
 
-#: Tried only once every specific adapter has declined. A generic reader
-#: recognises files a dedicated adapter parses better, so it must never
-#: compete with one.
+#: Tried only after every specific adapter has declined.
 FALLBACK = [generic]
 
 ADAPTERS = SPECIFIC + FALLBACK

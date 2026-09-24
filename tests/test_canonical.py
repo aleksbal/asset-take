@@ -1,10 +1,4 @@
-"""The canonical record and its round-trip.
-
-`avg_cost` and `broker_price` are optional: a source may state neither. Both
-were mandatory until a second adapter emitted a holding without a cost basis,
-at which point `read()` raised `ValueError` on the empty field and the
-dashboard died on any import from that source.
-"""
+"""Tests for the canonical holding record and its CSV round-trip."""
 import pytest
 
 from holdings import canonical
@@ -33,7 +27,6 @@ def test_round_trips_a_missing_optional_field(tmp_path, absent):
 
 
 def test_missing_cost_is_none_not_zero(tmp_path):
-    """Zero would read as a 100% gain."""
     p = tmp_path / "h.csv"
     canonical.write([holding(avg_cost=None)], p)
     assert canonical.read(p)[0].avg_cost != 0
@@ -41,7 +34,6 @@ def test_missing_cost_is_none_not_zero(tmp_path):
 
 
 def test_reads_a_holding_with_every_optional_field_absent(tmp_path):
-    """What the generic adapter produces: quantity and identity, nothing else."""
     p = tmp_path / "h.csv"
     canonical.write([Holding(isin="IWDA.AS", name="IWDA.AS", quantity=30,
                              currency="EUR", source="generic")], p)
@@ -51,7 +43,6 @@ def test_reads_a_holding_with_every_optional_field_absent(tmp_path):
 
 
 def test_quantity_stays_required(tmp_path):
-    """Unlike the optional fields — a holding without a quantity is not one."""
     p = tmp_path / "h.csv"
     p.write_text("isin,name,quantity,currency,avg_cost,broker_price,broker_as_of,venue,source\n"
                  "X,Y,,EUR,,,,,generic\n")

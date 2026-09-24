@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""Per-listing daily close series, seeded from the provider and then our own.
+"""Per-listing daily close series, stored as one CSV per ticker.
 
-A price series belongs to the instrument, not to the account: it says what a
-listing closed at, never what was held. That makes it safe to backfill, unlike
-portfolio value, which we only know from the day we start recording.
-
-The series is seeded once from the provider and extended by each daily run.
-Every row records where it came from, because the provider adjusts its history
-retroactively for splits and dividends while our own recorded closes stay as
-observed - without provenance the two halves could not be told apart, and a
-split would put a false step at the join.
+Rows are keyed by trading session and marked with their source: "yahoo" for
+rows from the provider's split-adjusted history, "local" for closes recorded
+by a daily run. Seeded from the provider once, then extended by each run.
 """
 import csv
 import os
@@ -25,27 +19,18 @@ from market.quotes import Quote
 COLUMNS = ["date", "close", "source"]
 YAHOO, LOCAL = "yahoo", "local"
 BACKFILL_PERIOD = "2y"
-# A single-day move this large is not a market move. It is the signal that the
-# scale of the series may have changed under us, and the only cheap one we
-# have: checking every listing for corporate actions every day would double
-# the daily fetch for an event that happens to a holding once in years.
-#
-# Set low enough for a 3-for-2, whose ratio is 0.667, and its reverse at 1.5.
-# Erring low costs one redundant fetch on a violent day and nothing else - a
-# re-seed replaces our rows with the provider's, which are authoritative
-# whether or not anything was rescaled. Erring high leaves a series silently
-# broken, so the asymmetry decides the threshold.
+# A one-day move larger than this is treated as a possible split and triggers
+# a re-seed. Low enough to catch a 3-for-2 (ratio 0.667) and its reverse (1.5).
 SPLIT_SUSPICION = 0.20
 
 
 def path_for(ticker):
-    """One file per listing. Tickers carry `.` and `^`, neither of which is a
-    path separator, so the symbol is usable as a filename as it stands."""
+    """The CSV file for `ticker`."""
     return paths.PRICES / f"{ticker}.csv"
 
 
 def load(ticker):
-    """The stored series as {date: (close, source)}, empty if we hold none."""
+    """The stored series as {date: (close, source)}; {} if there is none."""
     p = path_for(ticker)
     if not p.exists():
         return {}
@@ -55,18 +40,13 @@ def load(ticker):
             try:
                 out[row["date"]] = (float(row["close"]), row.get("source", ""))
             except (TypeError, ValueError):
-                continue        # a truncated write should not poison the series
+                continue        # skip unreadable rows
     return out
 
 
 def _write(ticker, series):
-    """Replace the series atomically.
-
-    A truncating write that dies partway leaves a file with some valid rows,
-    which is worse than no file: `load()` reads it as a series, `backfill()`
-    then declines to restore what was lost, and the next write persists the
-    remnant. Years of history would go permanently.
-    """
+    """Replace the stored series atomically, so a failed write leaves the old
+    file intact."""
     p = path_for(ticker)
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
@@ -87,12 +67,10 @@ def _write(ticker, series):
 
 
 def backfill(ticker, fetch=None, unit=None):
-    """Seed a listing that has no series yet. Returns the rows added.
+    """Seed the series from the provider's history. Returns the rows added.
 
-    A listing we already hold provider history for is left alone, so this is
-    safe to call on every run. A listing the provider cannot serve leaves no marker and is simply
-    retried next time: a recent IPO has little history today and more later,
-    and a permanent flag would keep it empty for good.
+    Does nothing if the series already holds provider rows. Locally recorded
+    rows are kept. `unit` is the quote unit, if known.
     """
     series = load(ticker)
     if any(source == YAHOO for _, source in series.values()):
@@ -100,10 +78,6 @@ def backfill(ticker, fetch=None, unit=None):
     rows = _fetched(ticker, fetch, unit)
     if not rows:
         return 0
-    # A seed can fail while the daily close succeeds, leaving a one-row local
-    # series. Testing for any series at all would then read that as seeded and
-    # never retry, so the test is for provider rows - and what we recorded
-    # ourselves is kept rather than thrown away by the eventual seed.
     merged = {day: (close, YAHOO) for day, close in rows.items()}
     for day, entry in series.items():
         merged.setdefault(day, entry)
@@ -112,14 +86,8 @@ def backfill(ticker, fetch=None, unit=None):
 
 
 def record(ticker, close, on=None):
-    """Append an observed close, preserving whatever is already stored.
-
-    `on` is the session the close belongs to, not the day we ran: a run on a
-    weekend downloads Friday's close, and filing it under Saturday invents a
-    trading day. It accepts a date or an ISO string.
-
-    A day we fetched keeps its fetched value: re-recording it as local would
-    lose the fact that the provider had adjusted it.
+    """Store `close` for session `on` (a date or ISO string; default: today).
+    Returns whether a row was added; an existing row is never overwritten.
     """
     day = on.isoformat() if hasattr(on, "isoformat") else (on or date.today().isoformat())
     series = load(ticker)
@@ -131,13 +99,8 @@ def record(ticker, close, on=None):
 
 
 def _fetch(ticker, unit=None):
-    """Daily closes from the provider as {iso date: close}, empty on failure.
-
-    Normalised to the major unit, like every other price we store. The daily
-    close arrives already converted, so leaving these raw would mix pence with
-    pounds in one series - and the resulting hundredfold step reads as a
-    corporate action, re-seeding the series back to the raw values on every
-    run.
+    """Settled daily closes from the provider as {iso date: close}, in the major
+    currency unit; {} on failure. Uses `unit` if given, else asks the provider.
     """
     try:
         handle = yf.Ticker(ticker)
@@ -156,13 +119,9 @@ def _fetch(ticker, unit=None):
 
     out = {}
     for ts, close in hist["Close"].items():
-        if close != close:          # NaN closes are gaps, not prices
+        if close != close:          # NaN: no data
             continue
-        # Quote refuses an unknown unit and marks an unclosed session, so
-        # both of the ways a bar can be unusable are decided in one place.
-        # An unscaled series would sit beside converted closes and read as a
-        # corporate action; an in-progress bar would fix an intraday value as
-        # that day's close, which record() then never corrects.
+        # Skip bars with an unknown unit or an unsettled session.
         quote = Quote.from_provider(close, currency, session=ts.date())
         if quote is None or not quote.settled:
             continue
@@ -171,15 +130,14 @@ def _fetch(ticker, unit=None):
 
 
 def _fetched(ticker, fetch, unit):
-    """The provider's history, with a known unit passed through where we have
-    one. positions.csv records it, so the fetch need not ask again."""
+    """Closes from `fetch` if given, else from the provider."""
     if fetch is not None:
         return fetch(ticker)
     return _fetch(ticker, unit=unit)
 
 
 def _looks_rescaled(previous, close):
-    """Whether a day's move is too large to be a price move."""
+    """Whether the move from `previous` to `close` exceeds SPLIT_SUSPICION."""
     if not previous or not close:
         return False
     ratio = close / previous
@@ -187,14 +145,11 @@ def _looks_rescaled(previous, close):
 
 
 def refresh(ticker, fetch=None, unit=None):
-    """Re-seed a series whose scale no longer matches the provider's.
+    """Replace the series with the provider's history, for when its scale has
+    changed (e.g. after a split). Returns the rows fetched.
 
-    A split rewrites the provider's history retroactively; ours stays as
-    observed. Once one happens, closes we recorded before it sit on the old
-    scale and closes after it on the new, and provenance cannot repair that
-    because both sides are ours and no ratio is stored. The provider's
-    adjusted history is the one consistent scale available, so it replaces
-    the range it covers. Anything of ours beyond that range is kept.
+    Stored rows after the fetched range are kept. Rows before it are rescaled
+    by the ratio on the first overlapping day, or dropped if there is none.
     """
     series = load(ticker)
     if not series:
@@ -206,11 +161,7 @@ def refresh(ticker, fetch=None, unit=None):
     earliest, latest = min(rows), max(rows)
     merged = {day: (close, YAHOO) for day, close in rows.items()}
 
-    # Rows the provider's window does not reach are kept, not dropped: once a
-    # series outlives BACKFILL_PERIOD, filtering to the fetched range alone
-    # would delete every older row on each refresh. They predate the rescaling
-    # though, so where a day overlaps we can read the ratio off it and put
-    # them on the provider's scale.
+    # Ratio between provider and stored close on the first overlapping day.
     scale = None
     for day in sorted(rows):
         if day in series and series[day][0]:
@@ -223,10 +174,7 @@ def refresh(ticker, fetch=None, unit=None):
         elif day < earliest and scale is not None:
             merged[day] = (close * scale, source)
         elif day < earliest:
-            # No overlapping day, so no ratio to read. A refresh happens
-            # because the scale is suspect; keeping these unscaled would
-            # preserve the very discontinuity it exists to remove, and there
-            # is nothing to correct them with. They are dropped.
+            # No ratio to rescale with: drop.
             continue
 
     _write(ticker, merged)
@@ -234,21 +182,13 @@ def refresh(ticker, fetch=None, unit=None):
 
 
 def update(closes, units=None, fetch=None):
-    """Seed any listing we hold no series for, then record its closes.
+    """Seed each ticker, then record its closes.
 
-    `closes` maps ticker to {session: close}, every settled session the
-    day's download held, and `units` to the venue's quote unit where it is
-    already known. A session already stored is left as it is, so passing a
-    window that overlaps the series costs nothing, and a session missed by
-    an earlier run is filled in. Returns (seeded, recorded, rescaled) counts.
-
-    A ticker with no closes is still seeded. The seed is its own fetch,
-    independent of the download that came back empty, so a gap in one run's
-    download is no reason to leave the listing without history until some
-    later run happens to price it too.
-
-    A close that cannot be a day's move from the one before it triggers a
-    re-seed: the series has most likely been rescaled by a corporate action.
+    `closes` maps ticker to {session: close}; `units` maps ticker to its quote
+    unit where known. Sessions already stored are skipped. A ticker with no
+    closes is still seeded. A close that moves more than SPLIT_SUSPICION from the
+    previous stored close triggers `refresh()` first.
+    Returns (seeded, recorded, rescaled) counts.
     """
     seeded = recorded = rescaled = 0
     for ticker, days in closes.items():

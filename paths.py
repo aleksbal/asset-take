@@ -23,4 +23,4 @@ CONFIG = DATA / "config.json"   # base currency, alert thresholds, preferences
 for d in (DATA, IMPORTS, HISTORY, PRICES, VOLUMES):
     d.mkdir(parents=True, exist_ok=True)
 
-REPORT = DATA / "report.json"   # the run's output; the page is one reader
+REPORT = DATA / "report.json"   # the report the dashboard renders

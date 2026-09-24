@@ -32,8 +32,7 @@ def write(holdings, path):
 
 
 def _opt_float(value):
-    """Blank means absent, not zero. A holding may state no cost basis, and a
-    zero there would silently read as a 100% gain."""
+    """`value` as a float, or None if it is blank."""
     value = (value or "").strip()
     return float(value) if value else None
 
