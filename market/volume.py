@@ -139,29 +139,19 @@ def _fetched(ticker, fetch):
     return _fetch(ticker)
 
 
-def update(volumes, dates=None, fetch=None, on=None):
-    """Seed any listing we hold no provider history for, then record today's
-    volume.
+def update(volumes, fetch=None):
+    """Seed any listing we hold no provider history for, then record its
+    volumes.
 
-    `volumes` maps ticker to its most recent traded volume, `dates` to the
-    session that volume belongs to - the same two-map contract as
-    `prices.update()`. Returns (seeded, recorded) counts.
-
-    A ticker whose volume is None is still seeded, for the reason given in
-    `prices.update()`: the seed does not depend on today's download.
+    `volumes` maps ticker to {session: volume}, every settled session the
+    day's download held - the same contract as `prices.update()`, and like
+    it, a ticker with none is still seeded. Returns (seeded, recorded).
     """
     seeded = recorded = 0
-    for ticker, vol in volumes.items():
+    for ticker, days in volumes.items():
         if not ticker:
             continue
         seeded += 1 if backfill(ticker, fetch=fetch) else 0
-        if vol is None:
-            continue
-        if dates is None:
-            day = on
-        elif dates.get(ticker):
-            day = dates[ticker]
-        else:
-            continue
-        recorded += 1 if record(ticker, vol, on=day) else 0
+        for day in sorted(days or {}):
+            recorded += 1 if record(ticker, days[day], on=day) else 0
     return seeded, recorded

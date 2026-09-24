@@ -77,21 +77,21 @@ class TestRecording:
 class TestDailyUpdate:
     def test_seeds_and_records_in_one_pass(self):
         seeded, recorded = volume.update(
-            {"SAP.DE": 500_000.0, "ALV.DE": 600_000.0},
-            fetch=fetch_ok, on=date(2026, 9, 18))
+            {"SAP.DE": {"2026-09-18": 500_000.0},
+             "ALV.DE": {"2026-09-18": 600_000.0}}, fetch=fetch_ok)
         assert (seeded, recorded) == (2, 2)
 
     def test_a_position_without_a_volume_records_nothing_today(self):
         seeded, recorded = volume.update(
-            {"SAP.DE": None, "ALV.DE": 600_000.0}, fetch=fetch_ok,
-            on=date(2026, 9, 18))
+            {"SAP.DE": {}, "ALV.DE": {"2026-09-18": 600_000.0}},
+            fetch=fetch_ok)
         assert recorded == 1
         assert "2026-09-18" not in volume.load("SAP.DE")
 
     def test_a_position_without_a_volume_is_still_seeded(self):
         """Today's batch download can lack a volume the provider's history
         has; the seed does not depend on it."""
-        seeded, _ = volume.update({"SAP.DE": None}, dates={}, fetch=fetch_ok)
+        seeded, _ = volume.update({"SAP.DE": {}}, fetch=fetch_ok)
         assert seeded == 1
         assert set(volume.load("SAP.DE")) == {"2026-09-16", "2026-09-17"}
 
@@ -100,9 +100,19 @@ class TestDailyUpdate:
             return fetch_ok(ticker) if ticker == "ALV.DE" else {}
 
         seeded, recorded = volume.update(
-            {"NEW.DE": 10.0, "ALV.DE": 600_000.0}, fetch=fetch_one,
-            on=date(2026, 9, 18))
+            {"NEW.DE": {"2026-09-18": 10.0},
+             "ALV.DE": {"2026-09-18": 600_000.0}}, fetch=fetch_one)
         assert seeded == 1 and recorded == 2
+
+
+class TestWindow:
+    def test_a_missed_session_is_filled_in(self):
+        volume.record("SAP.DE", 1.0, on="2026-09-16")
+        _, recorded = volume.update(
+            {"SAP.DE": {"2026-09-16": 1.0, "2026-09-17": 2.0,
+                        "2026-09-18": 3.0}}, fetch=fetch_none)
+        assert recorded == 2
+        assert len(volume.load("SAP.DE")) == 3
 
 
 class TestSeedRetry:
@@ -123,12 +133,10 @@ class TestSeedRetry:
         assert volume.load("SAP.DE")["2026-09-18"] == (500_000.0, volume.LOCAL)
 
     def test_a_failed_seed_then_a_record_still_retries(self):
-        seeded, _ = volume.update({"SAP.DE": 500_000.0},
-                                  dates={"SAP.DE": "2026-09-18"},
+        seeded, _ = volume.update({"SAP.DE": {"2026-09-18": 500_000.0}},
                                   fetch=fetch_none)
         assert seeded == 0
-        seeded, _ = volume.update({"SAP.DE": 600_000.0},
-                                  dates={"SAP.DE": "2026-09-19"},
+        seeded, _ = volume.update({"SAP.DE": {"2026-09-19": 600_000.0}},
                                   fetch=fetch_ok)
         assert seeded == 1
 

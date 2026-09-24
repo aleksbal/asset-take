@@ -5,7 +5,7 @@ valuation layer downloaded its own quotes and bypassed the scaling, so the
 stored row was right and every snapshot was still a hundredfold out. These
 tests cover the shared conversion and both layers that must apply it.
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -77,7 +77,7 @@ class TestValuationLayerApplies:
 
 class TestVolumeCapture:
     """Volume rides in on the same download as price, for the same settled
-    session - it needs no Quote, since a share count carries no currency."""
+    sessions - it needs no Quote, since a share count carries no currency."""
 
     @pytest.fixture
     def pm(self, monkeypatch):
@@ -96,10 +96,11 @@ class TestVolumeCapture:
         monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
         return pm
 
-    def test_the_settled_sessions_volume_is_captured(self, pm):
+    def test_the_settled_sessions_volumes_are_captured(self, pm):
         pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
         [out] = pm.fetch_prices([pos])
-        assert out.volume == pytest.approx(1_200_000.0)
+        assert out.volumes == {"2026-09-16": pytest.approx(1_000_000.0),
+                               "2026-09-17": pytest.approx(1_200_000.0)}
 
     def test_no_volume_column_leaves_it_unset_not_zero(self, monkeypatch):
         """The download this test doubles for has no Volume column at all -
@@ -118,7 +119,7 @@ class TestVolumeCapture:
         monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
         pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
         [out] = pm.fetch_prices([pos])
-        assert out.volume is None
+        assert out.volumes == {}
 
     def test_a_nan_volume_is_not_a_number_either(self, monkeypatch):
         """A missing volume can arrive as NaN rather than an absent column -
@@ -141,8 +142,8 @@ class TestVolumeCapture:
         monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
         pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
         [out] = pm.fetch_prices([pos])
-        assert out.volume is None
-        assert not (isinstance(out.volume, float) and math.isnan(out.volume))
+        assert "2026-09-17" not in out.volumes
+        assert not any(math.isnan(v) for v in out.volumes.values())
 
 
 class TestUnconfirmedUnit:
@@ -191,12 +192,13 @@ class TestUnconfirmedUnit:
         pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
         [out] = pm.fetch_prices([pos])
         assert out.current_price is None            # unit still unresolved
-        assert out.volume == pytest.approx(1_200_000.0)
+        assert out.closes == {}
+        assert out.volumes["2026-09-17"] == pytest.approx(1_200_000.0)
 
-    def test_volume_date_is_independent_of_price_date(self, monkeypatch):
-        """snapshot.py builds volume's own date map from volume_date, not
-        price_date - reusing price_date would silently drop a volume whose
-        quote unit never resolved, since price_date stays None for it."""
+    def test_volumes_are_independent_of_closes(self, monkeypatch):
+        """Volume is carried apart from closes - sharing one map of sessions
+        would silently drop a volume whose quote unit never resolved, since
+        no close is captured for it."""
         import portfolio_monitor as pm
         import pandas as pd
 
@@ -212,8 +214,8 @@ class TestUnconfirmedUnit:
         monkeypatch.setattr(pm.yf, "Ticker", lambda t: Blind())
         pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP")
         [out] = pm.fetch_prices([pos])
-        assert out.price_date is None
-        assert out.volume_date == "2026-09-17"
+        assert out.price_date is None and out.closes == {}
+        assert set(out.volumes) == {"2026-09-16", "2026-09-17"}
 
     def test_a_recorded_unit_survives_a_failed_lookup(self, pm):
         """This is the point of storing it: resolution already established the
@@ -230,6 +232,54 @@ class TestUnconfirmedUnit:
                           quote_currency="GBp")
         [out] = pm.fetch_prices([pos])
         assert out.price_date == "2026-09-17"
+
+    def test_the_settled_closes_are_captured_in_the_major_unit(self, pm):
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP",
+                          quote_currency="GBp")
+        [out] = pm.fetch_prices([pos])
+        assert out.closes == {"2026-09-16": pytest.approx(42.00),
+                              "2026-09-17": pytest.approx(42.08)}
+
+
+class TestRunAfterTheClose:
+    """The schedule runs at 23:00, when the latest bar is today's and not yet
+    settled. Recording only the latest bar meant every scheduled run recorded
+    nothing - the price series stopped growing after its seed, silently."""
+
+    @pytest.fixture
+    def out(self, monkeypatch):
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        today = date.today()
+        idx = pd.to_datetime([today - timedelta(days=2),
+                              today - timedelta(days=1), today])
+        frame = pd.DataFrame({"Close": [4200.0, 4208.0, 4250.0],
+                              "Volume": [1.0e6, 1.2e6, 3.0e5]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Quote:
+            fast_info = {"currency": "GBp"}
+            info = {"shortName": "British American Tobacco"}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
+        pos = pm.Position(ticker="BATS.L", quantity=10, currency="GBP",
+                          quote_currency="GBp")
+        [out] = pm.fetch_prices([pos])
+        return out
+
+    def test_the_snapshot_is_valued_at_the_latest_price(self, out):
+        assert out.current_price == pytest.approx(42.50)
+        assert out.price_date is None
+
+    def test_the_settled_sessions_are_still_captured(self, out):
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        assert out.closes[yesterday] == pytest.approx(42.08)
+        assert out.volumes[yesterday] == pytest.approx(1.2e6)
+
+    def test_todays_bar_is_not(self, out):
+        assert date.today().isoformat() not in out.closes
+        assert date.today().isoformat() not in out.volumes
 
 
 class TestMissingRate:
@@ -252,6 +302,17 @@ class TestMissingRate:
                                      pm.AlertConfig())
         assert report.total_value == 0
         assert pos.current_price is None
+
+    def test_a_missing_rate_leaves_the_listings_closes_alone(self):
+        """The rate is about valuing the portfolio; the closes are about the
+        instrument. The series used to be fed the price the valuation had
+        just cleared, so a failed FX lookup dropped real closes from it."""
+        import portfolio_monitor as pm
+        pos = pm.Position(ticker="X.QQ", quantity=10, currency="XXX",
+                          current_price=100.0, previous_close=100.0,
+                          closes={"2026-09-17": 100.0})
+        pm.calculate_report([pos], "EUR", {"EUR": 1.0}, pm.AlertConfig())
+        assert pos.closes == {"2026-09-17": 100.0}
 
     def test_a_position_with_a_rate_is_valued(self, monkeypatch):
         import portfolio_monitor as pm

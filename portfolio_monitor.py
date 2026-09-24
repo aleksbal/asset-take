@@ -48,14 +48,18 @@ class Position:
     previous_close: Optional[float] = None
     price_date: Optional[str] = None
     name: Optional[str] = None
-    # The settled session's traded volume, and the session it belongs to.
-    # A separate field from price_date rather than reusing it: volume
-    # capture does not depend on the quote's currency resolving, so it can
-    # be set while price_date stays None for a position whose unit is
-    # unknown - reusing price_date would silently drop that volume when
-    # it comes time to record it.
-    volume: Optional[float] = None
-    volume_date: Optional[str] = None
+    # Every settled session in the download, as {iso date: value} - what the
+    # per-listing series record. Not current_price: the daily run is after the
+    # close, when the latest bar is today's and unsettled, so a series fed
+    # only that bar recorded nothing at all. And the whole window rather than
+    # the latest settled bar, so a run that was missed, or a download that
+    # came back short, leaves no permanent gap for the next run to step over.
+    # Neither is a field the valuation may clear: a missing exchange rate says
+    # nothing about what the listing closed at.
+    closes: dict[str, float] = field(default_factory=dict)
+    # Separate from closes because volume carries no currency: it is captured
+    # even where the quote's unit is unknown and closes stays empty.
+    volumes: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -300,13 +304,18 @@ def _quote_currency(ticker: str) -> Optional[str]:
         return None
 
 
+# Long enough that a missed week of runs is still filled from the download;
+# valuation reads only the last two bars, so the length costs it nothing.
+DOWNLOAD_PERIOD = "1mo"
+
+
 def fetch_prices(positions: list[Position]) -> list[Position]:
     """Fetch current prices and previous close for all positions."""
     tickers = [p.ticker for p in positions]
 
     # Batch download for efficiency
     try:
-        data = yf.download(tickers, period="5d", group_by='ticker', progress=False, threads=True)
+        data = yf.download(tickers, period=DOWNLOAD_PERIOD, group_by='ticker', progress=False, threads=True)
     except Exception as e:
         print(f"ERROR fetching prices: {e}")
         return positions
@@ -334,6 +343,10 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                 # so this does not depend on a lookup that can fail.
                 unit = pos.quote_currency or _quote_currency(pos.ticker)
                 session = closes.index[-1].date()
+                # The latest bar values the snapshot; only settled ones may
+                # enter a series. They differ on any run after the close,
+                # which is when the schedule runs.
+                settled = [ts for ts in closes.index if ts.date() < date.today()]
                 quote = Quote.from_provider(pos.current_price, unit,
                                             session=session)
                 if quote is None:
@@ -353,25 +366,28 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                     # point-in-time valuation and wants it.
                     pos.price_date = (quote.session.isoformat()
                                       if quote.settled else None)
+                    for ts in settled:
+                        close = Quote.from_provider(float(closes.loc[ts]), unit,
+                                                    session=ts.date())
+                        pos.closes[close.session.isoformat()] = close.price
 
                 # Volume carries no currency, so it needs no Quote - and
                 # must not be gated behind one resolving. A legacy position
                 # with no quote_currency and a failed lookup leaves price
                 # unresolved (quote is None above), but that says nothing
-                # about whether the session settled, which volume alone
-                # depends on.
-                settled = session < date.today()
-                if settled and 'Volume' in ticker_data:
-                    pos.volume_date = session.isoformat()
-                    try:
-                        vol = float(ticker_data['Volume'].loc[closes.index[-1]])
+                # about which sessions settled, which volume alone depends on.
+                if 'Volume' in ticker_data:
+                    for ts in settled:
+                        try:
+                            vol = float(ticker_data['Volume'].loc[ts])
+                        except (KeyError, ValueError, TypeError):
+                            continue
                         # A missing volume arrives as NaN, not an exception -
                         # float(nan) succeeds. Left as NaN it would reach
                         # volume._write()'s round() and crash the run after
                         # the snapshot was already written.
-                        pos.volume = None if vol != vol else vol
-                    except (KeyError, ValueError, TypeError):
-                        pos.volume = None
+                        if vol == vol:
+                            pos.volumes[ts.date().isoformat()] = vol
 
             # Get company name
             try:
