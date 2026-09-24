@@ -1,21 +1,8 @@
-"""The parameters a row can carry, and how each one is computed.
+"""The parameters a report row can carry, and how each is computed.
 
-One entry per parameter. Adding a parameter is writing the maths in
-`trends.py` and adding an entry here: it then appears in the report, in the
-page, and in anything that filters rows, without those knowing its name.
-
-The registry carries what a parameter *means* - its label, its unit, a
-sentence a reader needs - and never how to print it. Decimal places, an em
-dash for a missing value and which side is green are display decisions and
-belong to whoever renders.
-
-`needs` names the inputs a parameter requires. Every parameter here needs
-only closes, volume, or both - never a cost basis or anything else that
-implies a holding - so everything here runs on any instrument, held or not,
-which is what lets a market-wide screen reuse this file unchanged. A listing
-with no volume recorded simply has no `volume_trend`, the same way a
-position with no cost basis has no P&L: absent, not computed from a
-substituted zero.
+Each entry declares its key, label, unit, a one-sentence meaning, the inputs
+it needs ("closes", "volumes") and a compute function. A parameter is only
+computed for a row that has every input it needs.
 """
 from dataclasses import dataclass
 from typing import Callable
@@ -27,9 +14,9 @@ from market import trends
 class Indicator:
     key: str
     label: str
-    unit: str          # percent | fall | index | days - how to read it
-    means: str         # one sentence, carried into the report for its reader
-    needs: tuple       # the inputs required, e.g. ("closes",)
+    unit: str          # percent | fall | index | days | vol | volume
+    means: str         # one sentence describing the value
+    needs: tuple       # required inputs, e.g. ("closes",)
     compute: Callable  # (closes, live, live_on, volumes) -> a number, or None
 
 
@@ -38,9 +25,6 @@ def _drawdown(closes, live, live_on, part):
     return None if d is None else d[part]
 
 
-# Two entries rather than one returning a pair. A parameter is one number:
-# that is what makes it filterable, comparable and printable without the
-# reader knowing which parameter it is holding.
 DRAWDOWN = Indicator(
     key="drawdown", label="From 6m high", unit="fall",
     means="below its highest close of the last six months",
@@ -92,32 +76,16 @@ ALL = [DRAWDOWN, PEAK_AGE, VS_MA50, VS_MA200, RSI, VOLATILITY, VOLUME_TREND]
 
 
 def declared(indicators=ALL):
-    """What the parameters are, for a reader of the report.
-
-    Carried in the file so a program reading it - another view, a screen, a
-    model - does not have to be told separately what a column means.
-    """
+    """Key, label, unit and meaning of each parameter, for the report."""
     return [{"key": i.key, "label": i.label, "unit": i.unit, "means": i.means}
             for i in indicators]
 
 
 def values(closes, live=None, live_on=None, volumes=None, have=None, indicators=ALL):
-    """Every parameter that `have` supports, computed from this series.
+    """{key: value} for every parameter whose inputs are available.
 
-    An empty series yields nothing at all rather than a row of zeroes: no
-    parameter is computed from data that cannot support it, and absent and
-    neutral are different claims.
-
-    `volumes` is optional and separate from `closes` for the same reason a
-    cost basis would be: not every listing has it recorded, so a parameter
-    that needs it must say so and be absent from rows without one, rather
-    than computed from a substituted zero. Passing it is what adds
-    `"volumes"` to `have`; a caller need not track that itself.
-
-    Closes and volumes are independent stores, so one may be present without
-    the other - a parameter needing only volumes must still compute where
-    there is no price series, or `volume_trend`'s own declared `needs`
-    would be a promise this function does not keep.
+    `have` lists the available inputs; by default it is derived from which of
+    `closes` and `volumes` are non-empty. Returns {} when both are empty.
     """
     if not closes and not volumes:
         return {}
@@ -132,14 +100,8 @@ def values(closes, live=None, live_on=None, volumes=None, have=None, indicators=
 
 
 def inputs(closes, live=None, live_on=None):
-    """What the parameters were computed from.
-
-    Carried beside the values because a figure computed from 40 sessions and
-    one computed from 400 are different claims, and the number alone cannot
-    be told apart. Not declared as parameters: these describe the
-    calculation rather than the instrument, so they belong in the report
-    without becoming a column.
-    """
+    """The price the parameters were measured against and the number of
+    closes they were computed from. {} for an empty series."""
     if not closes:
         return {}
     closes = sorted(closes, key=lambda row: str(row[0]))

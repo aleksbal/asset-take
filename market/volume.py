@@ -1,20 +1,9 @@
 #!/usr/bin/env python3
-"""Per-listing daily volume series, seeded from the provider and extended by
-our own runs.
+"""Per-listing daily volume series, stored as one CSV per ticker.
 
-Mirrors `market.prices`: one file per listing, keyed by the session the
-figure belongs to, extended once a day, and marked with where each row came
-from - a seed can fail transiently while the daily figure still arrives, and
-without that mark a one-row local series reads as already seeded, so the
-full history is never fetched again.
-
-It is smaller than `market.prices` in one respect: a price needs a `Quote`
-because its unit can be wrong in a way that is invisible without one - a
-share count carries no currency, so there is nothing to normalise and
-nothing to get wrong that way. And a split that doubles the share count is a
-real change in how much is trading, not a scale error to repair, so unlike
-`prices.refresh()` there is no re-seed here: a fetched volume is always
-taken at face value.
+Rows are keyed by trading session and marked with their source: "yahoo" for
+rows from the provider's history, "local" for rows recorded by a daily run.
+Seeded from the provider once, then extended by each run.
 """
 import csv
 import os
@@ -32,12 +21,12 @@ BACKFILL_PERIOD = "2y"
 
 
 def path_for(ticker):
-    """One file per listing, same convention as `market.prices`."""
+    """The CSV file for `ticker`."""
     return paths.VOLUMES / f"{ticker}.csv"
 
 
 def load(ticker):
-    """The stored series as {date: (volume, source)}, empty if we hold none."""
+    """The stored series as {date: (volume, source)}; {} if there is none."""
     p = path_for(ticker)
     if not p.exists():
         return {}
@@ -47,12 +36,12 @@ def load(ticker):
             try:
                 out[row["date"]] = (float(row["volume"]), row.get("source", ""))
             except (TypeError, ValueError):
-                continue        # a truncated write should not poison the series
+                continue        # skip unreadable rows
     return out
 
 
 def _write(ticker, series):
-    """Replace the series atomically - see `market.prices._write` for why."""
+    """Replace the stored series atomically."""
     p = path_for(ticker)
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
@@ -73,13 +62,10 @@ def _write(ticker, series):
 
 
 def backfill(ticker, fetch=None):
-    """Seed a listing that has no provider history yet. Returns rows added.
+    """Seed the series from the provider's history. Returns the rows added.
 
-    A seed can fail transiently while the daily figure still arrives via
-    `record()`, leaving a one-row local series. Testing for any series at
-    all would read that as seeded and never retry - so, like
-    `prices.backfill()`, this tests for a provider-sourced row specifically,
-    and a row recorded locally in the meantime is kept, not overwritten.
+    Does nothing if the series already holds provider rows. Locally recorded
+    rows are kept.
     """
     series = load(ticker)
     if any(source == YAHOO for _, source in series.values()):
@@ -95,11 +81,9 @@ def backfill(ticker, fetch=None):
 
 
 def record(ticker, volume, on=None):
-    """Append an observed volume, preserving whatever is already stored.
+    """Store `volume` for session `on` (default: today).
 
-    `on` is the session the figure belongs to, not the day we ran - same
-    reasoning as `prices.record()`: a weekend run must not file it under a
-    day the market never traded.
+    Returns whether a row was added; an existing row is never overwritten.
     """
     if volume is None:
         return False
@@ -113,7 +97,8 @@ def record(ticker, volume, on=None):
 
 
 def _fetch(ticker):
-    """Daily volume from the provider as {iso date: volume}, empty on failure."""
+    """Settled daily volumes from the provider as {iso date: volume}; {} on
+    failure."""
     try:
         hist = yf.Ticker(ticker).history(period=BACKFILL_PERIOD, interval="1d",
                                          auto_adjust=True)
@@ -124,10 +109,10 @@ def _fetch(ticker):
     today = date.today()
     out = {}
     for ts, vol in hist["Volume"].items():
-        if vol != vol:              # NaN rows are gaps, not zero-volume days
+        if vol != vol:              # NaN: no data
             continue
         session = ts.date()
-        if session >= today:        # unsettled: not a final count yet
+        if session >= today:        # not settled yet
             continue
         out[session.isoformat()] = float(vol)
     return out
@@ -140,12 +125,10 @@ def _fetched(ticker, fetch):
 
 
 def update(volumes, fetch=None):
-    """Seed any listing we hold no provider history for, then record its
-    volumes.
+    """Seed each ticker, then record its volumes.
 
-    `volumes` maps ticker to {session: volume}, every settled session the
-    day's download held - the same contract as `prices.update()`, and like
-    it, a ticker with none is still seeded. Returns (seeded, recorded).
+    `volumes` maps ticker to {session: volume}. A ticker with no volumes is
+    still seeded. Returns (seeded, recorded) counts.
     """
     seeded = recorded = 0
     for ticker, days in volumes.items():

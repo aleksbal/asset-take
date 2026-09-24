@@ -1,23 +1,12 @@
-"""A price with the facts that make it mean something.
-
-A bare float cannot say whether it is pounds or pence, or whether the session
-it came from has closed. Six review rounds found the same defect in six
-places: a provider price reaching storage or valuation with its unit left
-behind, where 4,208 pence is a perfectly valid number that happens to be a
-hundred times the truth.
-
-`Quote` exists so that cannot be written. It is constructed at the provider
-boundary and normalises there, so holding one means the unit is already known
-and applied. A later reader has nothing to forget.
-"""
+"""A provider price normalised to its currency's major unit (pence to
+pounds), with the trading session it belongs to."""
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
 from market.money import Money
 
-# Minor unit -> (major currency, scale). GBP is deliberately absent: it is the
-# major unit, and scaling it divides genuine pound prices by a hundred.
+# Minor unit -> (major currency, scale). GBP is the major unit and not listed.
 MINOR_UNITS = {"GBp": ("GBP", 0.01), "ZAc": ("ZAR", 0.01), "ILA": ("ILS", 0.01)}
 
 
@@ -31,12 +20,10 @@ def as_major(price, currency):
 
 @dataclass(frozen=True)
 class Quote:
-    """A provider price, already in its currency's major unit.
+    """A price in its currency's major unit.
 
-    `session` is the trading day the price belongs to, and `settled` whether
-    that day has closed. An unsettled quote is fine to value with - a
-    dashboard wants the live number - but must not be written into a series
-    as that day's close, because nothing corrects it afterwards.
+    `session` is the trading day it belongs to; `settled` is whether that day
+    has closed. Only settled quotes are written into a price series.
     """
     price: float
     currency: str
@@ -45,12 +32,8 @@ class Quote:
 
     @classmethod
     def from_provider(cls, price, unit, session=None, today=None):
-        """Build from what a provider returned, or None if it cannot be read.
-
-        Returns None where the unit is unknown: an unscaled price is
-        indistinguishable from a scaled one, and guessing has been the single
-        most expensive assumption in this codebase.
-        """
+        """A Quote from a raw provider price and its unit, or None if either
+        is missing. `today` overrides the date used to decide `settled`."""
         if price is None or not unit:
             return None
         value, currency = as_major(float(price), unit)
@@ -64,10 +47,5 @@ class Quote:
         return Money(self.price, self.currency)
 
     def converted(self, base, fx, on=None):
-        """This price in `base` as a `Converted`, or None without a rate.
-
-        A `Converted` rather than a float, for the same reason this class
-        exists at all: the rate that produced a number is part of what the
-        number means, and a reader who has only the float cannot recover it.
-        """
+        """This price in `base` as a `Converted`, or None without a rate."""
         return fx.exchange(self.money, base, on=on)
