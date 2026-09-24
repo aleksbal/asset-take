@@ -76,8 +76,8 @@ class TestValuationLayerApplies:
 
 
 class TestVolumeCapture:
-    """Volume rides in on the same download as price, for the same settled
-    sessions - it needs no Quote, since a share count carries no currency."""
+    """Volume rides in on the same download as price, for every settled
+    session - it needs no Quote, since a share count carries no currency."""
 
     @pytest.fixture
     def pm(self, monkeypatch):
@@ -144,6 +144,41 @@ class TestVolumeCapture:
         [out] = pm.fetch_prices([pos])
         assert "2026-09-17" not in out.volumes
         assert not any(math.isnan(v) for v in out.volumes.values())
+
+
+class TestVolumeWithoutClose:
+    """Volume is read from its own column, not from the sessions that have a
+    close. Otherwise a settled row with a real volume and a missing close
+    loses that volume, and a seeded series is never backfilled to recover
+    it."""
+
+    def _out(self, monkeypatch, closes):
+        import portfolio_monitor as pm
+        import pandas as pd
+
+        idx = pd.to_datetime(["2026-09-16", "2026-09-17"])
+        frame = pd.DataFrame({"Close": closes,
+                              "Volume": [1_000_000.0, 1_200_000.0]}, index=idx)
+        monkeypatch.setattr(pm.yf, "download", lambda *a, **k: frame)
+
+        class Quote:
+            fast_info = {"currency": "GBp"}
+            info = {}
+
+        monkeypatch.setattr(pm.yf, "Ticker", lambda t: Quote())
+        [out] = pm.fetch_prices([pm.Position(ticker="BATS.L", quantity=10,
+                                             currency="GBP")])
+        return out
+
+    def test_a_row_without_a_close_keeps_its_volume(self, monkeypatch):
+        out = self._out(monkeypatch, [4200.0, float("nan")])
+        assert out.volumes["2026-09-17"] == pytest.approx(1_200_000.0)
+        assert "2026-09-17" not in out.closes
+
+    def test_a_download_without_any_close_keeps_its_volumes(self, monkeypatch):
+        out = self._out(monkeypatch, [float("nan"), float("nan")])
+        assert set(out.volumes) == {"2026-09-16", "2026-09-17"}
+        assert out.current_price is None
 
 
 class TestUnconfirmedUnit:

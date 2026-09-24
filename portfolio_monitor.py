@@ -328,6 +328,26 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                 ticker_data = data[pos.ticker] if pos.ticker in data.columns.get_level_values(0) else None
 
             if ticker_data is not None and not ticker_data.empty:
+                # Volume first, and from its own column. It carries no
+                # currency, so it needs no Quote and must not be gated behind
+                # one resolving - nor behind the close: a row whose close is
+                # missing can still carry a real volume, and a download with
+                # no closes at all fails further down before reaching here.
+                if 'Volume' in ticker_data:
+                    for ts, vol in ticker_data['Volume'].items():
+                        if ts.date() >= date.today():
+                            continue        # unsettled: not a final count
+                        try:
+                            vol = float(vol)
+                        except (ValueError, TypeError):
+                            continue
+                        # A missing volume arrives as NaN, not an exception -
+                        # float(nan) succeeds. Left as NaN it would reach
+                        # volume._write()'s round() and crash the run after
+                        # the snapshot was already written.
+                        if vol == vol:
+                            pos.volumes[ts.date().isoformat()] = vol
+
                 # Get the last two trading days
                 closes = ticker_data['Close'].dropna()
                 if len(closes) >= 2:
@@ -370,24 +390,6 @@ def fetch_prices(positions: list[Position]) -> list[Position]:
                         close = Quote.from_provider(float(closes.loc[ts]), unit,
                                                     session=ts.date())
                         pos.closes[close.session.isoformat()] = close.price
-
-                # Volume carries no currency, so it needs no Quote - and
-                # must not be gated behind one resolving. A legacy position
-                # with no quote_currency and a failed lookup leaves price
-                # unresolved (quote is None above), but that says nothing
-                # about which sessions settled, which volume alone depends on.
-                if 'Volume' in ticker_data:
-                    for ts in settled:
-                        try:
-                            vol = float(ticker_data['Volume'].loc[ts])
-                        except (KeyError, ValueError, TypeError):
-                            continue
-                        # A missing volume arrives as NaN, not an exception -
-                        # float(nan) succeeds. Left as NaN it would reach
-                        # volume._write()'s round() and crash the run after
-                        # the snapshot was already written.
-                        if vol == vol:
-                            pos.volumes[ts.date().isoformat()] = vol
 
             # Get company name
             try:
